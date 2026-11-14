@@ -11,7 +11,7 @@ import java.util.Locale;
 
 public class MainActivity extends BridgeActivity {
     private TextToSpeech tts;
-    private volatile boolean ttsReady = false;
+    private volatile int initStatus = -999;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -24,10 +24,7 @@ public class MainActivity extends BridgeActivity {
         tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
             @Override
             public void onInit(int status) {
-                if (status == TextToSpeech.SUCCESS && tts != null) {
-                    tts.setLanguage(Locale.US);
-                    ttsReady = true;
-                }
+                initStatus = status;
             }
         });
         WebView webView = getBridge().getWebView();
@@ -49,17 +46,16 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public String speak(String text, String lang) {
             if (tts == null) return "tts_null";
-            if (!ttsReady) return "not_ready";
-            if (text == null) return "empty";
+            if (initStatus != TextToSpeech.SUCCESS) return "not_ready:" + initStatus;
+            if (text == null || text.isEmpty()) return "empty";
             tts.stop();
             Locale locale = "zh".equals(lang) ? Locale.CHINA : Locale.US;
             int r = tts.setLanguage(locale);
             if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shibei_tts");
-                return "lang_fallback:" + r;
+                return "lang_unsupported:" + r;
             }
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shibei_tts");
-            return "ok";
+            int speakResult = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shibei_tts");
+            return speakResult == TextToSpeech.SUCCESS ? "ok" : "speak_failed:" + speakResult;
         }
     }
 

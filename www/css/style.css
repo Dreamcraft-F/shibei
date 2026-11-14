@@ -281,7 +281,7 @@ input[type="search"] { flex: 1; }
 .fab {
   position: fixed;
   right: 20px;
-  bottom: 48px;
+  bottom: 64px;
   width: 56px;
   height: 56px;
   border-radius: 50%;
@@ -299,7 +299,7 @@ input[type="search"] { flex: 1; }
 
 .fab:active { transform: scale(0.94); }
 
-.fab.open { bottom: 96px; }
+.fab.open { bottom: 146px; }
 
 .fab-icon-close { display: none; }
 
