@@ -183,12 +183,16 @@
   }
 
   function speakTerm(text) {
+    const toSay = speakTextForTerm(text);
+    const zh = /[\u4e00-\u9fff]/.test(toSay);
+    if (window.AndroidTTS && typeof window.AndroidTTS.speak === 'function') {
+      window.AndroidTTS.speak(toSay, zh ? 'zh' : 'en');
+      return;
+    }
     if (!('speechSynthesis' in window)) return;
     const synth = window.speechSynthesis;
-    const toSay = speakTextForTerm(text);
     synth.cancel();
     const u = new SpeechSynthesisUtterance(toSay);
-    const zh = /[\u4e00-\u9fff]/.test(toSay);
     u.lang = zh ? 'zh-CN' : 'en-US';
     const voices = synth.getVoices();
     const match = voices.find((v) => v.lang === u.lang) ||

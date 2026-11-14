@@ -1,5 +1,6 @@
 {
   "appId": "com.dreamcraft.shibei",
   "appName": "拾贝",
-  "webDir": "www"
+  "webDir": "www",
+  "backgroundColor": "#0f172a"
 }
