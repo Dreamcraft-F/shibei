@@ -12,6 +12,23 @@ import java.util.Locale;
 public class MainActivity extends BridgeActivity {
     private TextToSpeech tts;
     private volatile int initStatus = -999;
+    private int engineIndex = 0;
+    private final String[] engineCandidates = new String[] { null, "com.google.android.tts", "com.samsung.android.tts" };
+
+    private final TextToSpeech.OnInitListener initListener = new TextToSpeech.OnInitListener() {
+        @Override
+        public void onInit(int status) {
+            if (status == TextToSpeech.SUCCESS) {
+                initStatus = TextToSpeech.SUCCESS;
+                return;
+            }
+            initStatus = status;
+            engineIndex++;
+            if (engineIndex < engineCandidates.length) {
+                createTts(engineCandidates[engineIndex]);
+            }
+        }
+    };
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -21,14 +38,21 @@ public class MainActivity extends BridgeActivity {
             View decor = getWindow().getDecorView();
             decor.setSystemUiVisibility(decor.getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         }
-        tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
-            @Override
-            public void onInit(int status) {
-                initStatus = status;
-            }
-        });
+        createTts(engineCandidates[0]);
         WebView webView = getBridge().getWebView();
         webView.addJavascriptInterface(new NativeBridge(), "AndroidNative");
+    }
+
+    private void createTts(String engine) {
+        if (tts != null) {
+            try { tts.shutdown(); } catch (Exception e) {}
+        }
+        initStatus = -999;
+        if (engine == null) {
+            tts = new TextToSpeech(this, initListener);
+        } else {
+            tts = new TextToSpeech(this, initListener, engine);
+        }
     }
 
     private class NativeBridge {
