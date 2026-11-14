@@ -188,7 +188,13 @@
     if (window.AndroidNative && typeof window.AndroidNative.speak === 'function') {
       const r = window.AndroidNative.speak(toSay, zh ? 'zh' : 'en');
       if (r && r !== 'ok') {
-        alert('TTS 状态：' + r);
+        if (r === 'no_engine') {
+          if (confirm('未检测到语音引擎，是否去下载 Google 文字转语音？')) {
+            window.AndroidNative.openTtsDownload();
+          }
+        } else {
+          alert('TTS 状态：' + r);
+        }
       }
       return;
     }

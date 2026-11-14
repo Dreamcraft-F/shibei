@@ -6,6 +6,8 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.graphics.Color;
 import android.view.View;
+import android.content.Intent;
+import android.net.Uri;
 import com.getcapacitor.BridgeActivity;
 import java.util.Locale;
 
@@ -82,9 +84,13 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public String speak(String text, String lang) {
-            if (tts == null) return "tts_null";
+            if (tts == null) return "no_engine";
             if (initStatus != TextToSpeech.SUCCESS) {
-                return "not_ready:" + initStatus + " 引擎列表:" + listEngines();
+                String engines = listEngines();
+                if (engines.equals("无") || engines.isEmpty()) {
+                    return "no_engine";
+                }
+                return "not_ready:" + initStatus + " 引擎列表:" + engines;
             }
             if (text == null || text.isEmpty()) return "empty";
             tts.stop();
@@ -95,6 +101,21 @@ public class MainActivity extends BridgeActivity {
             }
             int speakResult = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shibei_tts");
             return speakResult == TextToSpeech.SUCCESS ? "ok" : "speak_failed:" + speakResult;
+        }
+
+        @JavascriptInterface
+        public void openTtsDownload() {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.tts"));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception e) {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.tts"));
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Exception e2) {}
+            }
         }
     }
 
