@@ -7,8 +7,10 @@ import android.webkit.WebView;
 import android.graphics.Color;
 import android.view.View;
 import android.content.Intent;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import com.getcapacitor.BridgeActivity;
+import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends BridgeActivity {
@@ -68,14 +70,16 @@ public class MainActivity extends BridgeActivity {
 
     private String listEngines() {
         try {
+            Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
+            List<ResolveInfo> list = getPackageManager().queryIntentServices(intent, 0);
             StringBuilder sb = new StringBuilder();
-            for (TextToSpeech.EngineInfo info : tts.getEngines()) {
-                sb.append(info.name).append("(").append(info.label).append("),");
+            for (ResolveInfo info : list) {
+                sb.append(info.serviceInfo.packageName).append(",");
             }
             String s = sb.toString();
             return s.isEmpty() ? "无" : s;
         } catch (Exception e) {
-            return "获取失败";
+            return "获取失败:" + e.getMessage();
         }
     }
 
