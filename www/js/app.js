@@ -5,6 +5,7 @@
   const AI_KEY = 'java-suji-deepseek-key';
   const AI_HISTORY = 'java-suji-ai-history';
   const MODEL_KEY = 'java-suji-model';
+  const ENGINE_KEY = 'java-suji-tts-engine';
   const PRESET_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
   const AI_ADD_SYSTEM = '你是 Java 术语卡片生成助手，根据用户描述生成学习卡片。必须只输出一个 JSON 数组，不要输出任何其他文字、解释或 markdown 代码块标记。数组每项格式：{"term":"术语名","category":"分类名","def":"一句话中文解释","code":"代码示例","literal":"字面义","phonetic":"音标"}。term 和 def 必填，code、literal、phonetic 可选，没有就省略该字段。def 用中文、准确简洁，code 给简短 Java 示例。分类名尽量复用常见分类（如 集合框架、并发与多线程、JVM 与内存、Spring 核心、数据库与 SQL 等）。';
 
@@ -257,6 +258,51 @@
 
   function closeDetail() {
     $('#detailBackdrop').classList.remove('open');
+  }
+
+  // ---------- 设置 ----------
+  let settingsTimer = null;
+  function showSettingsBtn() {
+    $('#settingsBtn').classList.add('settings-show');
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(() => {
+      $('#settingsBtn').classList.remove('settings-show');
+    }, 5000);
+  }
+
+  function openSettings() {
+    loadEngineList();
+    $('#settingsDialog').hidden = false;
+    $('#settingsBtn').classList.remove('settings-show');
+  }
+
+  function closeSettings() {
+    $('#settingsDialog').hidden = true;
+  }
+
+  function loadEngineList() {
+    const sel = $('#ttsEngineSelect');
+    const saved = localStorage.getItem(ENGINE_KEY) || 'default';
+    sel.innerHTML = '';
+    const opts = [['default', '默认引擎']];
+    if (window.AndroidNative && window.AndroidNative.getEnginesList) {
+      try {
+        const list = window.AndroidNative.getEnginesList();
+        list.split('\n').forEach((line) => {
+          const parts = line.split('|');
+          if (parts.length === 2 && parts[0]) {
+            opts.push([parts[0], parts[1]]);
+          }
+        });
+      } catch (e) {}
+    }
+    opts.forEach((arr) => {
+      const o = document.createElement('option');
+      o.value = arr[0];
+      o.textContent = arr[1];
+      sel.appendChild(o);
+    });
+    sel.value = saved;
   }
 
   // ---------- AI 助手 ----------
@@ -936,6 +982,22 @@
       if (studyCards[studyIndex]) speakTerm(studyCards[studyIndex].term);
     });
 
+    // 设置
+    $('#settingsBtn').addEventListener('click', openSettings);
+    $('#settingsClose').addEventListener('click', closeSettings);
+    $('#ttsEngineSelect').addEventListener('change', () => {
+      const pkg = $('#ttsEngineSelect').value;
+      localStorage.setItem(ENGINE_KEY, pkg);
+      if (window.AndroidNative && window.AndroidNative.setEngine) {
+        window.AndroidNative.setEngine(pkg);
+      }
+    });
+    $('#view-study').addEventListener('click', (e) => {
+      if (e.target === $('#view-study') || e.target.classList.contains('swipe-hint')) {
+        showSettingsBtn();
+      }
+    });
+
     // 弹出列表
     $('#openSheetBtn').addEventListener('click', openSheet);
     $('#sheetClose').addEventListener('click', closeSheet);
@@ -1028,6 +1090,11 @@
     if (window.AndroidNative && window.AndroidNative.getStatusBarHeight) {
       const h = parseInt(window.AndroidNative.getStatusBarHeight(), 10);
       if (h > 0) document.body.style.paddingTop = h + 'px';
+    }
+
+    const savedEngine = localStorage.getItem(ENGINE_KEY);
+    if (savedEngine && savedEngine !== 'default' && window.AndroidNative && window.AndroidNative.setEngine) {
+      window.AndroidNative.setEngine(savedEngine);
     }
 
     if ('serviceWorker' in navigator) {

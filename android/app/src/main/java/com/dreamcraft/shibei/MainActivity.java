@@ -148,6 +148,39 @@ public class MainActivity extends BridgeActivity {
                 return "failed:" + e.getMessage();
             }
         }
+
+        @JavascriptInterface
+        public String getEnginesList() {
+            try {
+                Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
+                List<ResolveInfo> list = getPackageManager().queryIntentServices(intent, 0);
+                StringBuilder sb = new StringBuilder();
+                for (ResolveInfo info : list) {
+                    sb.append(info.serviceInfo.packageName).append("|").append(info.loadLabel(getPackageManager())).append("\n");
+                }
+                return sb.toString();
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public void setEngine(String pkg) {
+            if (tts != null) {
+                try { tts.shutdown(); } catch (Exception e) {}
+                tts = null;
+            }
+            initStatus = -999;
+            if (pkg == null || pkg.isEmpty() || "default".equals(pkg)) {
+                createTts(null);
+            } else {
+                try {
+                    tts = new TextToSpeech(getApplicationContext(), initListener, pkg);
+                } catch (Exception e) {
+                    initStatus = TextToSpeech.ERROR;
+                }
+            }
+        }
     }
 
     @Override
