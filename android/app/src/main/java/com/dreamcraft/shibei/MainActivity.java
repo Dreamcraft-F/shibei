@@ -15,7 +15,7 @@ public class MainActivity extends BridgeActivity {
     private TextToSpeech tts;
     private volatile int initStatus = -999;
     private int engineIndex = 0;
-    private final String[] engineCandidates = new String[] { null, "com.google.android.tts", "com.samsung.android.tts" };
+    private final String[] engineCandidates = new String[] { "com.google.android.tts", null };
 
     private final TextToSpeech.OnInitListener initListener = new TextToSpeech.OnInitListener() {
         @Override
@@ -50,10 +50,19 @@ public class MainActivity extends BridgeActivity {
             try { tts.shutdown(); } catch (Exception e) {}
         }
         initStatus = -999;
-        if (engine == null) {
-            tts = new TextToSpeech(getApplicationContext(), initListener);
-        } else {
-            tts = new TextToSpeech(getApplicationContext(), initListener, engine);
+        try {
+            if (engine == null) {
+                tts = new TextToSpeech(getApplicationContext(), initListener);
+            } else {
+                tts = new TextToSpeech(getApplicationContext(), initListener, engine);
+            }
+        } catch (Exception e) {
+            engineIndex++;
+            if (engineIndex < engineCandidates.length) {
+                createTts(engineCandidates[engineIndex]);
+            } else {
+                initStatus = TextToSpeech.ERROR;
+            }
         }
     }
 
