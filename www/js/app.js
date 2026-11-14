@@ -185,8 +185,11 @@
   function speakTerm(text) {
     const toSay = speakTextForTerm(text);
     const zh = /[\u4e00-\u9fff]/.test(toSay);
-    if (window.AndroidTTS && typeof window.AndroidTTS.speak === 'function') {
-      window.AndroidTTS.speak(toSay, zh ? 'zh' : 'en');
+    if (window.AndroidNative && typeof window.AndroidNative.speak === 'function') {
+      const r = window.AndroidNative.speak(toSay, zh ? 'zh' : 'en');
+      if (r && r !== 'ok') {
+        alert('TTS 状态：' + r);
+      }
       return;
     }
     if (!('speechSynthesis' in window)) return;
@@ -900,7 +903,7 @@
     // 发音按钮
     $('#speakBtn').addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!window.AndroidTTS && !('speechSynthesis' in window)) {
+      if (!window.AndroidNative && !('speechSynthesis' in window)) {
         alert('当前环境不支持朗读');
         return;
       }
@@ -1009,6 +1012,11 @@
     bind();
     switchView('study');
     fillAiModel();
+
+    if (window.AndroidNative && window.AndroidNative.getStatusBarHeight) {
+      const h = parseInt(window.AndroidNative.getStatusBarHeight(), 10);
+      if (h > 0) document.body.style.paddingTop = h + 'px';
+    }
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js').catch(() => {});

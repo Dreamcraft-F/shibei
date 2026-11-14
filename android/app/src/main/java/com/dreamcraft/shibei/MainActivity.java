@@ -31,26 +31,35 @@ public class MainActivity extends BridgeActivity {
             }
         });
         WebView webView = getBridge().getWebView();
-        webView.addJavascriptInterface(new TtsInterface(), "AndroidTTS");
-        int statusBarHeight = 0;
-        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
-        if (resourceId > 0) {
-            statusBarHeight = getResources().getDimensionPixelSize(resourceId);
-        }
-        webView.setPadding(0, statusBarHeight, 0, 0);
+        webView.addJavascriptInterface(new NativeBridge(), "AndroidNative");
     }
 
-    private class TtsInterface {
+    private class NativeBridge {
         @JavascriptInterface
-        public void speak(String text, String lang) {
-            if (tts == null || text == null || !ttsReady) return;
+        public String getStatusBarHeight() {
+            int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
+            if (resourceId > 0) {
+                int px = getResources().getDimensionPixelSize(resourceId);
+                float density = getResources().getDisplayMetrics().density;
+                return String.valueOf(Math.round(px / density));
+            }
+            return "0";
+        }
+
+        @JavascriptInterface
+        public String speak(String text, String lang) {
+            if (tts == null) return "tts_null";
+            if (!ttsReady) return "not_ready";
+            if (text == null) return "empty";
             tts.stop();
             Locale locale = "zh".equals(lang) ? Locale.CHINA : Locale.US;
             int r = tts.setLanguage(locale);
             if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts.setLanguage(Locale.US);
+                tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shibei_tts");
+                return "lang_fallback:" + r;
             }
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shibei_tts");
+            return "ok";
         }
     }
 
