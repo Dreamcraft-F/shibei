@@ -900,8 +900,8 @@
     // 发音按钮
     $('#speakBtn').addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!('speechSynthesis' in window)) {
-        alert('当前浏览器不支持网页朗读，请改用 Chrome 打开');
+      if (!window.AndroidTTS && !('speechSynthesis' in window)) {
+        alert('当前环境不支持朗读');
         return;
       }
       if (studyCards[studyIndex]) speakTerm(studyCards[studyIndex].term);
