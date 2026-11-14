@@ -49,9 +49,22 @@ public class MainActivity extends BridgeActivity {
         }
         initStatus = -999;
         if (engine == null) {
-            tts = new TextToSpeech(this, initListener);
+            tts = new TextToSpeech(getApplicationContext(), initListener);
         } else {
-            tts = new TextToSpeech(this, initListener, engine);
+            tts = new TextToSpeech(getApplicationContext(), initListener, engine);
+        }
+    }
+
+    private String listEngines() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (TextToSpeech.EngineInfo info : tts.getEngines()) {
+                sb.append(info.name).append("(").append(info.label).append("),");
+            }
+            String s = sb.toString();
+            return s.isEmpty() ? "无" : s;
+        } catch (Exception e) {
+            return "获取失败";
         }
     }
 
@@ -70,7 +83,9 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public String speak(String text, String lang) {
             if (tts == null) return "tts_null";
-            if (initStatus != TextToSpeech.SUCCESS) return "not_ready:" + initStatus;
+            if (initStatus != TextToSpeech.SUCCESS) {
+                return "not_ready:" + initStatus + " 引擎列表:" + listEngines();
+            }
             if (text == null || text.isEmpty()) return "empty";
             tts.stop();
             Locale locale = "zh".equals(lang) ? Locale.CHINA : Locale.US;
