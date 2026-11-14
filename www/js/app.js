@@ -79,11 +79,17 @@
         overrides: getOverrides()
       }
     };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const json = JSON.stringify(data, null, 2);
+    const filename = 'shibei-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+    if (window.AndroidNative && typeof window.AndroidNative.exportData === 'function') {
+      window.AndroidNative.exportData(json, filename);
+      return;
+    }
+    const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'java-suji-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

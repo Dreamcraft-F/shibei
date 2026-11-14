@@ -9,7 +9,10 @@ import android.view.View;
 import android.content.Intent;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import androidx.core.content.FileProvider;
 import com.getcapacitor.BridgeActivity;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.List;
 import java.util.Locale;
 
@@ -123,6 +126,27 @@ public class MainActivity extends BridgeActivity {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
             } catch (Exception e) {}
+        }
+
+        @JavascriptInterface
+        public String exportData(String json, String filename) {
+            try {
+                File file = new File(getCacheDir(), filename);
+                FileOutputStream fos = new FileOutputStream(file);
+                fos.write(json.getBytes("UTF-8"));
+                fos.close();
+                Uri uri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", file);
+                Intent share = new Intent(Intent.ACTION_SEND);
+                share.setType("application/json");
+                share.putExtra(Intent.EXTRA_STREAM, uri);
+                share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                Intent chooser = Intent.createChooser(share, "导出数据");
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(chooser);
+                return "ok";
+            } catch (Exception e) {
+                return "failed:" + e.getMessage();
+            }
         }
     }
 
