@@ -724,8 +724,7 @@
 
   async function askAi(question) {
     if (!question.trim()) return;
-    const key = localStorage.getItem(AI_KEY);
-    if (!key) { openAiKey(); return; }
+    if (!getApiConfig().apiKey) { openAiKey(); return; }
 
     aiHistory.push({ role: 'user', content: question.trim() });
     saveAiHistory();
@@ -880,8 +879,7 @@
 
   async function generateCards(desc) {
     if (!desc.trim()) return;
-    const key = localStorage.getItem(AI_KEY);
-    if (!key) { openAiKey(); return; }
+    if (!getApiConfig().apiKey) { openAiKey(); return; }
 
     const btn = $('#aiAddGenerate');
     const box = $('#aiAddResult');
