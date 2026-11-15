@@ -483,25 +483,36 @@
 
   function getModel() { return localStorage.getItem(MODEL_KEY) || 'deepseek-flash'; }
 
-  function getApiConfig() {
+  function getCustomApiConfig() {
     const custom = localStorage.getItem(CUSTOM_API_KEY);
     if (custom) {
       try {
         const c = JSON.parse(custom);
-        if (c.baseUrl && c.apiKey && c.model) {
-          return { baseUrl: c.baseUrl, apiKey: c.apiKey, model: c.model };
-        }
+        if (c.baseUrl && c.apiKey && c.model) return c;
       } catch (e) {}
     }
-    return { baseUrl: 'https://api.deepseek.com', apiKey: localStorage.getItem(AI_KEY) || '', model: getModel() };
+    return null;
+  }
+
+  function getApiConfig() {
+    const cur = getModel();
+    const custom = getCustomApiConfig();
+    if (custom && custom.model === cur) {
+      return { baseUrl: custom.baseUrl, apiKey: custom.apiKey, model: custom.model };
+    }
+    return { baseUrl: 'https://api.deepseek.com', apiKey: localStorage.getItem(AI_KEY) || '', model: cur };
   }
 
   function fillAiModel() {
     const sel = $('#aiModel');
     const cur = getModel();
     const list = Array.from(new Set(PRESET_MODELS.concat([cur])));
+    const custom = getCustomApiConfig();
+    if (custom && custom.model) {
+      list.push(custom.model);
+    }
     sel.innerHTML = '';
-    list.forEach((m) => {
+    Array.from(new Set(list)).forEach((m) => {
       const o = document.createElement('option');
       o.value = m;
       o.textContent = m;
@@ -1076,9 +1087,11 @@
         return;
       }
       localStorage.setItem(CUSTOM_API_KEY, JSON.stringify({ baseUrl: baseUrl, apiKey: apiKey, model: model }));
+      localStorage.setItem(MODEL_KEY, model);
       clearAiHistory();
+      fillAiModel();
       closeSettings();
-      alert('已保存自定义模型');
+      alert('已保存自定义模型，AI 已切换到它');
     });
     $('#customModelSelect').addEventListener('pointerdown', () => {
       const baseUrl = $('#customBaseUrl').value.trim();
@@ -1090,8 +1103,13 @@
     });
     $('#customClearBtn').addEventListener('click', () => {
       localStorage.removeItem(CUSTOM_API_KEY);
+      const cur = getModel();
+      if (!PRESET_MODELS.includes(cur)) {
+        localStorage.setItem(MODEL_KEY, 'deepseek-flash');
+      }
       clearAiHistory();
       loadCustomApi();
+      fillAiModel();
       alert('已清除自定义模型，回到 DeepSeek');
     });
     $('#view-study').addEventListener('click', (e) => {
