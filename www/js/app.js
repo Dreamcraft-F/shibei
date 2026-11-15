@@ -902,24 +902,10 @@
     const systemMsg = AI_ADD_SYSTEM + ' 以下是已有术语，请勿生成与它们重复或语义相同的卡片：' + existingTerms;
 
     try {
-      const res = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-        body: JSON.stringify({
-          model: getModel(),
-          messages: [
-            { role: 'system', content: systemMsg },
-            { role: 'user', content: desc.trim() }
-          ],
-          stream: false
-        })
-      });
-      const data = await res.json();
-      const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      if (!content) {
-        box.innerHTML = '<div class="empty">生成失败：' + ((data.error && data.error.message) || '未知错误') + '</div>';
-        return;
-      }
+      const content = await callAi([
+        { role: 'system', content: systemMsg },
+        { role: 'user', content: desc.trim() }
+      ]);
       let arr;
       try {
         arr = JSON.parse(extractJson(content));
