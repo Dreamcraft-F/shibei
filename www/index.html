@@ -175,6 +175,14 @@
         <span>语音引擎</span>
         <select id="ttsEngineSelect"></select>
       </label>
+      <div class="settings-divider">自定义模型（OpenAI 兼容）</div>
+      <input id="customBaseUrl" type="text" autocomplete="off" placeholder="Base URL，如 https://api.openai.com/v1" />
+      <input id="customApiKey" type="text" autocomplete="off" placeholder="API Key" />
+      <input id="customModel" type="text" autocomplete="off" placeholder="模型名，如 gpt-4o" />
+      <div class="ai-key-dialog-actions">
+        <button class="btn btn-danger" id="customClearBtn">清除自定义</button>
+        <button class="btn btn-primary" id="customSaveBtn">保存自定义</button>
+      </div>
       <div class="ai-key-dialog-actions">
         <button class="btn btn-cancel" id="settingsClose">关闭</button>
       </div>

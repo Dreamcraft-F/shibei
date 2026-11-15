@@ -6,6 +6,7 @@
   const AI_HISTORY = 'java-suji-ai-history';
   const MODEL_KEY = 'java-suji-model';
   const ENGINE_KEY = 'java-suji-tts-engine';
+  const CUSTOM_API_KEY = 'java-suji-custom-api';
   const PRESET_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
   const AI_ADD_SYSTEM = '你是 Java 术语卡片生成助手，根据用户描述生成学习卡片。必须只输出一个 JSON 数组，不要输出任何其他文字、解释或 markdown 代码块标记。数组每项格式：{"term":"术语名","category":"分类名","def":"一句话中文解释","code":"代码示例","literal":"字面义","phonetic":"音标"}。term 和 def 必填，code、literal、phonetic 可选，没有就省略该字段。def 用中文、准确简洁，code 给简短 Java 示例。分类名尽量复用常见分类（如 集合框架、并发与多线程、JVM 与内存、Spring 核心、数据库与 SQL 等）。';
 
@@ -272,12 +273,29 @@
 
   function openSettings() {
     loadEngineList();
+    loadCustomApi();
     $('#settingsDialog').hidden = false;
     $('#settingsBtn').classList.remove('settings-show');
   }
 
   function closeSettings() {
     $('#settingsDialog').hidden = true;
+  }
+
+  function loadCustomApi() {
+    const c = localStorage.getItem(CUSTOM_API_KEY);
+    if (c) {
+      try {
+        const obj = JSON.parse(c);
+        $('#customBaseUrl').value = obj.baseUrl || '';
+        $('#customApiKey').value = obj.apiKey || '';
+        $('#customModel').value = obj.model || '';
+        return;
+      } catch (e) {}
+    }
+    $('#customBaseUrl').value = '';
+    $('#customApiKey').value = '';
+    $('#customModel').value = '';
   }
 
   function loadEngineList() {
@@ -420,6 +438,19 @@
 
   function getModel() { return localStorage.getItem(MODEL_KEY) || 'deepseek-flash'; }
 
+  function getApiConfig() {
+    const custom = localStorage.getItem(CUSTOM_API_KEY);
+    if (custom) {
+      try {
+        const c = JSON.parse(custom);
+        if (c.baseUrl && c.apiKey && c.model) {
+          return { baseUrl: c.baseUrl, apiKey: c.apiKey, model: c.model };
+        }
+      } catch (e) {}
+    }
+    return { baseUrl: 'https://api.deepseek.com', apiKey: localStorage.getItem(AI_KEY) || '', model: getModel() };
+  }
+
   function fillAiModel() {
     const sel = $('#aiModel');
     const cur = getModel();
@@ -456,11 +487,12 @@
   }
 
   async function callAi(messages) {
-    const key = localStorage.getItem(AI_KEY);
-    const res = await fetch('https://api.deepseek.com/chat/completions', {
+    const cfg = getApiConfig();
+    const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify({ model: getModel(), messages: messages, stream: false })
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.apiKey },
+      body: JSON.stringify({ model: cfg.model, messages: messages, stream: false })
     });
     const data = await res.json();
     if (!(data.choices && data.choices[0] && data.choices[0].message)) {
@@ -992,6 +1024,25 @@
         window.AndroidNative.setEngine(pkg);
       }
     });
+    $('#customSaveBtn').addEventListener('click', () => {
+      const baseUrl = $('#customBaseUrl').value.trim();
+      const apiKey = $('#customApiKey').value.trim();
+      const model = $('#customModel').value.trim();
+      if (!baseUrl || !apiKey || !model) {
+        alert('请填写 Base URL、API Key 和模型名');
+        return;
+      }
+      localStorage.setItem(CUSTOM_API_KEY, JSON.stringify({ baseUrl: baseUrl, apiKey: apiKey, model: model }));
+      clearAiHistory();
+      closeSettings();
+      alert('已保存自定义模型');
+    });
+    $('#customClearBtn').addEventListener('click', () => {
+      localStorage.removeItem(CUSTOM_API_KEY);
+      clearAiHistory();
+      loadCustomApi();
+      alert('已清除自定义模型，回到 DeepSeek');
+    });
     $('#view-study').addEventListener('click', (e) => {
       if (e.target === $('#view-study') || e.target.classList.contains('swipe-hint')) {
         showSettingsBtn();
@@ -1033,6 +1084,7 @@
     });
     $('#aiModel').addEventListener('change', () => {
       localStorage.setItem(MODEL_KEY, $('#aiModel').value);
+      clearAiHistory();
     });
     $('#aiSend').addEventListener('click', () => {
       const v = $('#aiInput').value;
