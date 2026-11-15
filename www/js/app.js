@@ -292,24 +292,22 @@
   function fillModelSelect(models, current) {
     const sel = $('#customModelSelect');
     sel.innerHTML = '';
-    sel.appendChild(modelOpt('__manual__', '手动输入...'));
-    models.forEach((m) => sel.appendChild(modelOpt(m, m)));
-    if (current && current !== '__manual__') {
-      if (!models.includes(current)) sel.appendChild(modelOpt(current, current));
-      sel.value = current;
-      $('#customModelInput').hidden = true;
+    if (current) {
+      sel.appendChild(modelOpt(current, current + '（当前）'));
     } else {
-      sel.value = '__manual__';
-      $('#customModelInput').hidden = false;
-      $('#customModelInput').value = (current && current !== '__manual__') ? current : '';
+      sel.appendChild(modelOpt('', '点击获取模型...'));
     }
+    models.forEach((m) => {
+      if (m !== current) sel.appendChild(modelOpt(m, m));
+    });
+    sel.value = current || '';
   }
 
   function getCustomModel() {
-    const sel = $('#customModelSelect');
-    return sel.value === '__manual__' ? $('#customModelInput').value.trim() : sel.value;
+    return $('#customModelSelect').value;
   }
 
+  let modelsFetchedFor = '';
   async function fetchModels() {
     const baseUrl = $('#customBaseUrl').value.trim();
     const apiKey = $('#customApiKey').value.trim();
@@ -321,7 +319,7 @@
       const models = (data.data || []).map((m) => m.id).filter(Boolean);
       if (models.length === 0) { alert('未获取到模型列表'); return; }
       fillModelSelect(models, getCustomModel());
-      alert('已获取 ' + models.length + ' 个模型');
+      modelsFetchedFor = baseUrl + '|' + apiKey;
     } catch (e) {
       alert('获取模型失败：' + e.message);
     }
@@ -342,6 +340,7 @@
       $('#customApiKey').value = '';
     }
     fillModelSelect([], model);
+    modelsFetchedFor = '';
   }
 
   function loadEngineList() {
@@ -1083,9 +1082,13 @@
       closeSettings();
       alert('已保存自定义模型');
     });
-    $('#fetchModelsBtn').addEventListener('click', fetchModels);
-    $('#customModelSelect').addEventListener('change', () => {
-      $('#customModelInput').hidden = ($('#customModelSelect').value !== '__manual__');
+    $('#customModelSelect').addEventListener('pointerdown', () => {
+      const baseUrl = $('#customBaseUrl').value.trim();
+      const apiKey = $('#customApiKey').value.trim();
+      const sig = baseUrl + '|' + apiKey;
+      if (sig && sig !== modelsFetchedFor) {
+        fetchModels();
+      }
     });
     $('#customClearBtn').addEventListener('click', () => {
       localStorage.removeItem(CUSTOM_API_KEY);
