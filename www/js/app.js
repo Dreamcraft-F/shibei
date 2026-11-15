@@ -394,17 +394,15 @@
 
       hidePeek(true);
       cardEl.classList.add('dragging');
-      cardEl.style.transform = 'scale(1.015)';
-      cardEl.style.opacity = '1';
-      void cardEl.offsetWidth;
-      cardEl.classList.remove('dragging');
       cardEl.style.transform = '';
       cardEl.style.opacity = '';
+      void cardEl.offsetWidth;
+      cardEl.classList.remove('dragging');
 
       setTimeout(() => {
         if (token === cardAnimToken) cardAnimating = false;
-      }, 160);
-    }, 200);
+      }, 80);
+    }, 220);
   }
 
   function speakTextForTerm(term) {
