@@ -541,7 +541,7 @@
       '\n- 列出卡片：{"action":"list_cards"}（列出全部）或 {"action":"list_cards","category":"分类名"}（列出某分类）' +
       '\n- 查询卡片：{"action":"search_card","query":"用户完整查询意图"}' +
       '\n- 获取详细讲解：{"action":"get_detail","term":"术语"}' +
-      '\n- 添加卡片：{"action":"add_card","term":"术语","def":"解释","category":"分类","code":"代码","literal":"字面义","phonetic":"音标"}' +
+      '\n- 添加卡片：{"action":"add_card","term":"术语","def":"解释","category":"分类","code":"代码","literal":"字面义","phonetic":"音标","detail":"详细讲解（可选，没有则不填）"}' +
       '\n- 删除卡片：{"action":"delete_card","term":"术语"}（单个）；{"action":"delete_card","terms":["术语1","术语2"]}（批量）；{"action":"delete_card","category":"分类名"}（整个分类）；{"action":"delete_card","categories":["分类1","分类2"]}（多个分类）；{"action":"delete_card"}（全部）' +
       '\n- 修改卡片：{"action":"rebuild_card","term":"术语","instruction":"修改要求"}（也可用 terms / category / categories 批量）' +
       '\n- 添加详细讲解：{"action":"add_detail","term":"术语","detail":"详细的讲解内容"}（不指定 term 则加到当前卡片）' +
@@ -806,7 +806,7 @@
 
         if (adds.length > 0) {
           const valid = adds.map((t) => validateCards([{
-            term: t.term, category: t.category, def: t.def, code: t.code, literal: t.literal, phonetic: t.phonetic
+            term: t.term, category: t.category, def: t.def, code: t.code, literal: t.literal, phonetic: t.phonetic, detail: t.detail
           }])[0]).filter(Boolean);
           if (valid.length === 0) {
             results.push('添加失败：缺少 term 或 def');
