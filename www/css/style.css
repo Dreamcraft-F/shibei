@@ -86,7 +86,11 @@ input[type="search"] { flex: 1; }
   cursor: pointer;
   -webkit-user-select: text;
   user-select: text;
+  touch-action: pan-y;
+  transition: transform 0.22s ease-out, opacity 0.22s ease-out;
 }
+
+.card.dragging { transition: none; }
 
 .card-inner {
   position: relative;
@@ -153,6 +157,26 @@ input[type="search"] { flex: 1; }
   word-break: break-all;
   margin: auto 0;
 }
+
+.card-front .card-term { text-align: center; margin: 0; }
+
+.card-front { justify-content: center; }
+
+.card-front .card-top {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  right: 24px;
+}
+
+.card-front .card-hint {
+  position: absolute;
+  bottom: 24px;
+  left: 24px;
+  right: 24px;
+}
+
+.card-front .card-phonetic { margin-top: -4px; }
 
 .card-phonetic {
   color: #8a8378;
@@ -367,6 +391,14 @@ input[type="search"] { flex: 1; }
 .settings-row select {
   flex: 1;
   max-width: 70%;
+}
+
+.settings-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
 }
 
 .ai-backdrop {

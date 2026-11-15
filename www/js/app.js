@@ -7,6 +7,7 @@
   const MODEL_KEY = 'java-suji-model';
   const ENGINE_KEY = 'java-suji-tts-engine';
   const CUSTOM_API_KEY = 'java-suji-custom-api';
+  const ANIM_KEY = 'java-suji-anim';
   const PRESET_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
   const AI_ADD_SYSTEM = '你是 Java 术语卡片生成助手，根据用户描述生成学习卡片。必须只输出一个 JSON 数组，不要输出任何其他文字、解释或 markdown 代码块标记。数组每项格式：{"term":"术语名","category":"分类名","def":"一句话中文解释","code":"代码示例","literal":"字面义","phonetic":"音标","detail":"详细讲解"}。term 和 def 必填，code、literal、phonetic、detail 可选，没有就省略该字段。detail 是给用户的深入详细讲解，默认不要生成，只有用户明确要求详细讲解时才生成。def 用中文、准确简洁，code 给简短 Java 示例。分类名尽量复用常见分类（如 集合框架、并发与多线程、JVM 与内存、Spring 核心、数据库与 SQL 等）。';
 
@@ -132,6 +133,7 @@
   let pendingStudy = null;
 
   function buildStudy(category, startKey, flip) {
+    cancelCardAnimation();
     studyCards = allCards().filter((c) => !category || c.category === category);
     if (startKey) {
       const idx = studyCards.findIndex((c) => c.key === startKey);
@@ -194,6 +196,85 @@
     if (studyCards.length === 0) return;
     studyIndex = (studyIndex - 1 + studyCards.length) % studyCards.length;
     renderStudy();
+  }
+
+  // ---------- 滑动反馈 ----------
+  function animationsEnabled() {
+    const v = localStorage.getItem(ANIM_KEY);
+    if (v === 'on') return true;
+    if (v === 'off') return false;
+    return !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  let cardAnimating = false;
+  let cardAnimToken = 0;
+  let suppressCardClick = false;
+
+  function cancelCardAnimation() {
+    cardAnimToken++;
+    cardAnimating = false;
+    resetCardDrag(true);
+  }
+
+  function setCardDrag(dx) {
+    if (!animationsEnabled()) return;
+    const cardEl = $('#card');
+    const rot = Math.max(-10, Math.min(10, dx / 30));
+    const opacity = Math.max(0.45, 1 - Math.abs(dx) / 520);
+    cardEl.classList.add('dragging');
+    cardEl.style.transform = 'translateX(' + dx + 'px) rotate(' + rot + 'deg)';
+    cardEl.style.opacity = String(opacity);
+  }
+
+  function resetCardDrag(instant) {
+    const cardEl = $('#card');
+    if (instant) {
+      cardEl.classList.add('dragging');
+      cardEl.style.transform = '';
+      cardEl.style.opacity = '';
+      void cardEl.offsetWidth;
+      cardEl.classList.remove('dragging');
+    } else {
+      cardEl.classList.remove('dragging');
+      cardEl.style.transform = '';
+      cardEl.style.opacity = '';
+    }
+  }
+
+  // dir < 0：向左手势，切下一张；dir > 0：向右手势，切上一张
+  function animateCardChange(dir) {
+    if (!animationsEnabled()) {
+      if (dir < 0) nextCard();
+      else prevCard();
+      return;
+    }
+    if (cardAnimating || studyCards.length === 0) return;
+    cardAnimating = true;
+    const token = ++cardAnimToken;
+    const cardEl = $('#card');
+    const w = cardEl.offsetWidth || 320;
+    const outX = dir < 0 ? -(w + 80) : (w + 80);
+    const rot = dir < 0 ? -12 : 12;
+
+    cardEl.classList.remove('dragging');
+    cardEl.style.transform = 'translateX(' + outX + 'px) rotate(' + rot + 'deg)';
+    cardEl.style.opacity = '0';
+
+    setTimeout(() => {
+      if (token !== cardAnimToken) return;
+      cardEl.classList.add('dragging');
+      cardEl.style.transform = 'translateX(' + (dir < 0 ? 60 : -60) + 'px)';
+      cardEl.style.opacity = '0';
+      if (dir < 0) nextCard();
+      else prevCard();
+      void cardEl.offsetWidth;
+      cardEl.classList.remove('dragging');
+      cardEl.style.transform = '';
+      cardEl.style.opacity = '';
+      setTimeout(() => {
+        if (token === cardAnimToken) cardAnimating = false;
+      }, 240);
+    }, 220);
   }
 
   function speakTextForTerm(term) {
@@ -296,6 +377,7 @@
   function openSettings() {
     loadEngineList();
     loadCustomApi();
+    $('#animToggle').checked = animationsEnabled();
     $('#settingsDialog').hidden = false;
     $('#settingsBtn').classList.remove('settings-show');
   }
@@ -1627,6 +1709,7 @@
       else buildStudy($('#studyCategory').value);
     } else {
       pendingStudy = null;
+      cancelCardAnimation();
       if (name === 'list') renderList();
     }
     updateProgressText();
@@ -1675,6 +1758,7 @@
 
     // 卡片点击翻转（桌面鼠标 + 移动端 tap）
     $('#card').addEventListener('click', () => {
+      if (suppressCardClick || cardAnimating) return;
       studyFlipped = !studyFlipped;
       $('#card').classList.toggle('flipped', studyFlipped);
     });
@@ -1712,6 +1796,11 @@
       if (window.AndroidNative && window.AndroidNative.setEngine) {
         window.AndroidNative.setEngine(pkg);
       }
+    });
+    $('#animToggle').addEventListener('change', () => {
+      const on = $('#animToggle').checked;
+      localStorage.setItem(ANIM_KEY, on ? 'on' : 'off');
+      if (!on) cancelCardAnimation();
     });
     $('#customSaveBtn').addEventListener('click', () => {
       const baseUrl = $('#customBaseUrl').value.trim();
@@ -1804,27 +1893,59 @@
       }
     });
 
-    // 左右滑动切换
-    let startX = 0, startY = 0;
+    // 左右滑动切换（拖动跟随 + 飞出/进入动画）
+    let startX = 0, startY = 0, dragging = false, horizontal = null;
     const card = $('#card');
     card.addEventListener('touchstart', (e) => {
       startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
+      dragging = false;
+      horizontal = null;
+      if (cardAnimating) return;
+    }, { passive: true });
+    card.addEventListener('touchmove', (e) => {
+      if (cardAnimating || !animationsEnabled()) return;
+      const dx = e.touches[0].clientX - startX;
+      const dy = e.touches[0].clientY - startY;
+      if (horizontal === null) {
+        if (Math.abs(dx) < 8) return;
+        horizontal = Math.abs(dx) > Math.abs(dy) * 1.2;
+        if (!horizontal) return;
+      }
+      if (!horizontal) return;
+      dragging = true;
+      setCardDrag(dx);
     }, { passive: true });
     card.addEventListener('touchend', (e) => {
+      if (cardAnimating) return;
       const dx = e.changedTouches[0].clientX - startX;
       const dy = e.changedTouches[0].clientY - startY;
-      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
-        if (dx < 0) nextCard();
-        else prevCard();
+      const wasHorizontal = Math.abs(dx) > Math.abs(dy);
+      if (dragging) {
+        dragging = false;
+        if (Math.abs(dx) > 20) {
+          suppressCardClick = true;
+          setTimeout(() => { suppressCardClick = false; }, 400);
+        }
+        if (Math.abs(dx) > 60 && wasHorizontal) {
+          animateCardChange(dx < 0 ? -1 : 1);
+        } else {
+          resetCardDrag();
+        }
+        return;
+      }
+      if (Math.abs(dx) > 60 && wasHorizontal) {
+        suppressCardClick = true;
+        setTimeout(() => { suppressCardClick = false; }, 400);
+        animateCardChange(dx < 0 ? -1 : 1);
       }
     }, { passive: true });
 
     // 键盘方向键（桌面）
     document.addEventListener('keydown', (e) => {
       if ($('#view-study').classList.contains('active')) {
-        if (e.key === 'ArrowRight') nextCard();
-        else if (e.key === 'ArrowLeft') prevCard();
+        if (e.key === 'ArrowRight') animateCardChange(-1);
+        else if (e.key === 'ArrowLeft') animateCardChange(1);
         else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); studyFlipped = !studyFlipped; $('#card').classList.toggle('flipped', studyFlipped); }
       }
     });
