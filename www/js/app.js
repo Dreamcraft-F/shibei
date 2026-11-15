@@ -8,7 +8,7 @@
   const ENGINE_KEY = 'java-suji-tts-engine';
   const CUSTOM_API_KEY = 'java-suji-custom-api';
   const PRESET_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
-  const AI_ADD_SYSTEM = '你是 Java 术语卡片生成助手，根据用户描述生成学习卡片。必须只输出一个 JSON 数组，不要输出任何其他文字、解释或 markdown 代码块标记。数组每项格式：{"term":"术语名","category":"分类名","def":"一句话中文解释","code":"代码示例","literal":"字面义","phonetic":"音标"}。term 和 def 必填，code、literal、phonetic 可选，没有就省略该字段。def 用中文、准确简洁，code 给简短 Java 示例。分类名尽量复用常见分类（如 集合框架、并发与多线程、JVM 与内存、Spring 核心、数据库与 SQL 等）。';
+  const AI_ADD_SYSTEM = '你是 Java 术语卡片生成助手，根据用户描述生成学习卡片。必须只输出一个 JSON 数组，不要输出任何其他文字、解释或 markdown 代码块标记。数组每项格式：{"term":"术语名","category":"分类名","def":"一句话中文解释","code":"代码示例","literal":"字面义","phonetic":"音标","detail":"详细讲解"}。term 和 def 必填，code、literal、phonetic、detail 可选，没有就省略该字段。detail 是给用户的深入详细讲解，默认不要生成，只有用户明确要求详细讲解时才生成。def 用中文、准确简洁，code 给简短 Java 示例。分类名尽量复用常见分类（如 集合框架、并发与多线程、JVM 与内存、Spring 核心、数据库与 SQL 等）。';
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -254,6 +254,9 @@
     $('#detailDef').textContent = c.def;
     $('#detailCode').textContent = c.code || '';
     $('#detailCode').style.display = c.code ? '' : 'none';
+    $('#detailDetail').textContent = c.detail || '';
+    $('#detailDetail').style.display = c.detail ? '' : 'none';
+    $('#detailDetailTitle').style.display = c.detail ? '' : 'none';
     $('#detailBackdrop').classList.add('open');
   }
 
@@ -506,16 +509,13 @@
   function fillAiModel() {
     const sel = $('#aiModel');
     const cur = getModel();
-    const list = Array.from(new Set(PRESET_MODELS.concat([cur])));
     const custom = getCustomApiConfig();
-    if (custom && custom.model) {
-      list.push(custom.model);
-    }
+    const list = Array.from(new Set(PRESET_MODELS.concat([cur], custom && custom.model ? [custom.model] : [])));
     sel.innerHTML = '';
-    Array.from(new Set(list)).forEach((m) => {
+    list.forEach((m) => {
       const o = document.createElement('option');
       o.value = m;
-      o.textContent = m;
+      o.textContent = (custom && custom.model === m) ? (m + '（自定义）') : m;
       sel.appendChild(o);
     });
     sel.value = cur;
@@ -538,6 +538,7 @@
       '\n- 添加卡片：{"action":"add_card","term":"术语","def":"解释","category":"分类","code":"代码","literal":"字面义","phonetic":"音标"}' +
       '\n- 删除卡片：{"action":"delete_card","term":"术语"}（单个）；{"action":"delete_card","terms":["术语1","术语2"]}（批量）；{"action":"delete_card","category":"分类名"}（整个分类）；{"action":"delete_card","categories":["分类1","分类2"]}（多个分类）；{"action":"delete_card"}（全部）' +
       '\n- 修改卡片：{"action":"rebuild_card","term":"术语","instruction":"修改要求"}（也可用 terms / category / categories 批量）' +
+      '\n- 添加详细讲解：{"action":"add_detail","term":"术语","detail":"详细的讲解内容"}（不指定 term 则加到当前卡片）' +
       '\n若用户只是提问、没有要求操作，就正常用文字回答。';
     return p;
   }
@@ -730,6 +731,21 @@
       return '已修改 ' + ok + ' 张卡片';
     }
 
+    if (action === 'add_detail') {
+      const term = String(tool.term || (currentStudyCard ? currentStudyCard.term : '')).trim();
+      const detail = String(tool.detail || '').trim();
+      if (!detail) return '缺少详细内容';
+      const card = allCards().find((x) => x.term.toLowerCase() === term.toLowerCase());
+      if (!card) return '未找到卡片「' + term + '」';
+      updateCard(card, { detail: detail });
+      if (currentStudyCard && currentStudyCard.term === card.term) {
+        currentStudyCard = allCards().find((x) => x.term === card.term) || null;
+        renderStudy();
+      }
+      renderList();
+      return '已为「' + card.term + '」添加详细讲解';
+    }
+
     return '未知工具：' + action;
   }
 
@@ -818,7 +834,8 @@
         def: String(c.def).trim(),
         code: c.code ? String(c.code).trim() : '',
         literal: c.literal ? String(c.literal).trim() : '',
-        phonetic: c.phonetic ? String(c.phonetic).trim() : ''
+        phonetic: c.phonetic ? String(c.phonetic).trim() : '',
+        detail: c.detail ? String(c.detail).trim() : ''
       });
     });
     return out;
