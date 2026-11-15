@@ -525,8 +525,13 @@
     let p = '你是 Java 学习助手，用简洁准确的中文解释 Java/后端相关概念，必要时附代码示例。';
     if (currentStudyCard) {
       p += '\n\n【当前卡片（用户此刻正在学习，以此为准）】术语「' + currentStudyCard.term + '」（分类：' + currentStudyCard.category + '），解释：「' + currentStudyCard.def + '」' +
-        (currentStudyCard.code ? '，代码示例：「' + currentStudyCard.code + '」' : '') +
-        '。即使用户在之前的对话里提过别的卡片，现在提到「当前卡片」「这张卡」「这个/它」时，一律指上面这张卡。';
+        (currentStudyCard.code ? '，代码示例：「' + currentStudyCard.code + '」' : '');
+      if (currentStudyCard.detail) {
+        p += '。该卡片有「详细讲解」，摘要：「' + currentStudyCard.detail.slice(0, 200) + (currentStudyCard.detail.length > 200 ? '…' : '') + '」（完整内容可用 get_detail 工具获取）';
+      } else {
+        p += '。该卡片暂无「详细讲解」。';
+      }
+      p += '即使用户在之前的对话里提过别的卡片，现在提到「当前卡片」「这张卡」「这个/它」时，一律指上面这张卡。';
     }
     const cats = categories();
     if (cats.length) {
@@ -535,10 +540,12 @@
     p += '\n\n【可用工具】当用户要求执行操作时，只输出一个 JSON 对象（不要任何其他文字，也不要先用文字回答）：' +
       '\n- 列出卡片：{"action":"list_cards"}（列出全部）或 {"action":"list_cards","category":"分类名"}（列出某分类）' +
       '\n- 查询卡片：{"action":"search_card","query":"用户完整查询意图"}' +
+      '\n- 获取详细讲解：{"action":"get_detail","term":"术语"}' +
       '\n- 添加卡片：{"action":"add_card","term":"术语","def":"解释","category":"分类","code":"代码","literal":"字面义","phonetic":"音标"}' +
       '\n- 删除卡片：{"action":"delete_card","term":"术语"}（单个）；{"action":"delete_card","terms":["术语1","术语2"]}（批量）；{"action":"delete_card","category":"分类名"}（整个分类）；{"action":"delete_card","categories":["分类1","分类2"]}（多个分类）；{"action":"delete_card"}（全部）' +
       '\n- 修改卡片：{"action":"rebuild_card","term":"术语","instruction":"修改要求"}（也可用 terms / category / categories 批量）' +
       '\n- 添加详细讲解：{"action":"add_detail","term":"术语","detail":"详细的讲解内容"}（不指定 term 则加到当前卡片）' +
+      '\n- 清空详细讲解：{"action":"clear_detail","term":"术语"}（不指定 term 则清空当前卡片）' +
       '\n若用户只是提问、没有要求操作，就正常用文字回答。';
     return p;
   }
@@ -667,7 +674,16 @@
         cards = allCards().filter((c) => c.category === cat || c.category.includes(cat) || cat.includes(c.category));
       }
       if (cards.length === 0) return '卡片库是空的';
-      return '共 ' + cards.length + ' 张卡片：\n' + cards.map((c) => '[' + c.term + ']（' + c.category + '）').join('\n');
+      return '共 ' + cards.length + ' 张卡片：\n' + cards.map((c) =>
+        '[' + c.term + ']（' + c.category + '）' + (c.def ? c.def.slice(0, 30) : '') + (c.detail ? '【有详细】' : '')).join('\n');
+    }
+
+    if (action === 'get_detail') {
+      const term = String(tool.term || (currentStudyCard ? currentStudyCard.term : '')).trim();
+      const card = allCards().find((x) => x.term.toLowerCase() === term.toLowerCase());
+      if (!card) return '未找到卡片「' + term + '」';
+      if (!card.detail) return '「' + card.term + '」暂无详细讲解';
+      return '「' + card.term + '」的详细讲解：\n' + card.detail;
     }
 
     if (action === 'search_card') {
@@ -744,6 +760,19 @@
       }
       renderList();
       return '已为「' + card.term + '」添加详细讲解';
+    }
+
+    if (action === 'clear_detail') {
+      const term = String(tool.term || (currentStudyCard ? currentStudyCard.term : '')).trim();
+      const card = allCards().find((x) => x.term.toLowerCase() === term.toLowerCase());
+      if (!card) return '未找到卡片「' + term + '」';
+      updateCard(card, { detail: '' });
+      if (currentStudyCard && currentStudyCard.term === card.term) {
+        currentStudyCard = allCards().find((x) => x.term === card.term) || null;
+        renderStudy();
+      }
+      renderList();
+      return '已清空「' + card.term + '」的详细讲解';
     }
 
     return '未知工具：' + action;
