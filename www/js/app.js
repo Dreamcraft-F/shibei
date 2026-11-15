@@ -282,20 +282,66 @@
     $('#settingsDialog').hidden = true;
   }
 
+  function modelOpt(value, text) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = text;
+    return o;
+  }
+
+  function fillModelSelect(models, current) {
+    const sel = $('#customModelSelect');
+    sel.innerHTML = '';
+    sel.appendChild(modelOpt('__manual__', '手动输入...'));
+    models.forEach((m) => sel.appendChild(modelOpt(m, m)));
+    if (current && current !== '__manual__') {
+      if (!models.includes(current)) sel.appendChild(modelOpt(current, current));
+      sel.value = current;
+      $('#customModelInput').hidden = true;
+    } else {
+      sel.value = '__manual__';
+      $('#customModelInput').hidden = false;
+      $('#customModelInput').value = (current && current !== '__manual__') ? current : '';
+    }
+  }
+
+  function getCustomModel() {
+    const sel = $('#customModelSelect');
+    return sel.value === '__manual__' ? $('#customModelInput').value.trim() : sel.value;
+  }
+
+  async function fetchModels() {
+    const baseUrl = $('#customBaseUrl').value.trim();
+    const apiKey = $('#customApiKey').value.trim();
+    if (!baseUrl || !apiKey) { alert('请先填写 Base URL 和 API Key'); return; }
+    const url = baseUrl.replace(/\/+$/, '') + '/models';
+    try {
+      const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + apiKey } });
+      const data = await res.json();
+      const models = (data.data || []).map((m) => m.id).filter(Boolean);
+      if (models.length === 0) { alert('未获取到模型列表'); return; }
+      fillModelSelect(models, getCustomModel());
+      alert('已获取 ' + models.length + ' 个模型');
+    } catch (e) {
+      alert('获取模型失败：' + e.message);
+    }
+  }
+
   function loadCustomApi() {
     const c = localStorage.getItem(CUSTOM_API_KEY);
+    let model = '';
     if (c) {
       try {
         const obj = JSON.parse(c);
         $('#customBaseUrl').value = obj.baseUrl || '';
         $('#customApiKey').value = obj.apiKey || '';
-        $('#customModel').value = obj.model || '';
-        return;
+        model = obj.model || '';
       } catch (e) {}
+    } else {
+      $('#customBaseUrl').value = '';
+      $('#customApiKey').value = '';
     }
-    $('#customBaseUrl').value = '';
-    $('#customApiKey').value = '';
-    $('#customModel').value = '';
+    fillModelSelect([], model);
   }
 
   function loadEngineList() {
@@ -1027,7 +1073,7 @@
     $('#customSaveBtn').addEventListener('click', () => {
       const baseUrl = $('#customBaseUrl').value.trim();
       const apiKey = $('#customApiKey').value.trim();
-      const model = $('#customModel').value.trim();
+      const model = getCustomModel();
       if (!baseUrl || !apiKey || !model) {
         alert('请填写 Base URL、API Key 和模型名');
         return;
@@ -1036,6 +1082,10 @@
       clearAiHistory();
       closeSettings();
       alert('已保存自定义模型');
+    });
+    $('#fetchModelsBtn').addEventListener('click', fetchModels);
+    $('#customModelSelect').addEventListener('change', () => {
+      $('#customModelInput').hidden = ($('#customModelSelect').value !== '__manual__');
     });
     $('#customClearBtn').addEventListener('click', () => {
       localStorage.removeItem(CUSTOM_API_KEY);
