@@ -1,4 +1,4 @@
-const CACHE_NAME = 'java-suji-v2';
+const CACHE_NAME = 'java-suji-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -27,17 +27,17 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  const req = e.request;
+  if (new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
-    caches.match(e.request).then(
-      (cached) =>
-        cached ||
-        fetch(e.request)
-          .then((res) => {
-            const copy = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(e.request, copy));
-            return res;
-          })
-          .catch(() => cached)
-    )
+    fetch(req)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+        return res;
+      })
+      .catch(() =>
+        caches.match(req).then((cached) => cached || caches.match('./index.html'))
+      )
   );
 });

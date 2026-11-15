@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import androidx.core.content.FileProvider;
+import androidx.activity.OnBackPressedCallback;
 import com.getcapacitor.BridgeActivity;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -48,6 +49,27 @@ public class MainActivity extends BridgeActivity {
         createTts(engineCandidates[0]);
         WebView webView = getBridge().getWebView();
         webView.addJavascriptInterface(new NativeBridge(), "AndroidNative");
+
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                WebView wv = getBridge() != null ? getBridge().getWebView() : null;
+                if (wv == null) {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    return;
+                }
+                wv.evaluateJavascript(
+                    "(function(){try{return window.__handleAndroidBack ? !!window.__handleAndroidBack() : false;}catch(e){return false;}})()",
+                    value -> {
+                        if (!"true".equals(value)) {
+                            setEnabled(false);
+                            getOnBackPressedDispatcher().onBackPressed();
+                            setEnabled(true);
+                        }
+                    });
+            }
+        });
     }
 
     private void createTts(String engine) {

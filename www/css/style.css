@@ -94,9 +94,13 @@ input[type="search"] { flex: 1; }
   height: 100%;
   transition: transform 0.5s;
   transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  will-change: transform;
 }
 
 .card.flipped .card-inner { transform: rotateY(180deg); }
+
+.card.no-flip-anim .card-inner { transition: none; }
 
 .card-face {
   position: absolute;
@@ -477,19 +481,20 @@ input[type="search"] { flex: 1; }
   margin: auto;
 }
 
-.ai-msg h2, .ai-msg h3, .ai-msg h4 { margin: 8px 0 4px; font-weight: 700; line-height: 1.4; }
-.ai-msg h2 { font-size: 17px; }
-.ai-msg h3 { font-size: 16px; }
-.ai-msg h4 { font-size: 15px; }
-.ai-msg strong { font-weight: 700; }
-.ai-msg code {
+.ai-msg h2, .ai-msg h3, .ai-msg h4,
+.detail-detail h2, .detail-detail h3, .detail-detail h4 { margin: 8px 0 4px; font-weight: 700; line-height: 1.4; }
+.ai-msg h2, .detail-detail h2 { font-size: 17px; }
+.ai-msg h3, .detail-detail h3 { font-size: 16px; }
+.ai-msg h4, .detail-detail h4 { font-size: 15px; }
+.ai-msg strong, .detail-detail strong { font-weight: 700; }
+.ai-msg code, .detail-detail code {
   background: rgba(0, 0, 0, 0.06);
   padding: 2px 5px;
   border-radius: 4px;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 13px;
 }
-.ai-msg .md-code {
+.md-code {
   background: #f0ece3;
   color: #7c4a2a;
   padding: 12px;
@@ -502,7 +507,7 @@ input[type="search"] { flex: 1; }
   font-family: ui-monospace, Consolas, monospace;
 }
 
-.ai-msg .md-table {
+.md-table {
   border-collapse: collapse;
   margin: 8px 0;
   font-size: 13px;
@@ -511,15 +516,15 @@ input[type="search"] { flex: 1; }
   overflow-x: auto;
 }
 
-.ai-msg .md-table th,
-.ai-msg .md-table td {
+.md-table th,
+.md-table td {
   border: 1px solid rgba(0, 0, 0, 0.15);
   padding: 6px 10px;
   text-align: left;
   white-space: nowrap;
 }
 
-.ai-msg .md-table th {
+.md-table th {
   background: rgba(0, 0, 0, 0.05);
   font-weight: 700;
 }
@@ -703,7 +708,11 @@ input[type="search"] { flex: 1; }
   display: flex;
   flex-direction: column;
   gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
+
+.detail-body > * { flex-shrink: 0; }
 
 .detail-term {
   font-size: 30px;
@@ -746,7 +755,7 @@ input[type="search"] { flex: 1; }
   font-size: 15px;
   line-height: 1.8;
   color: var(--fg);
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
 }
 
@@ -786,6 +795,8 @@ input[type="search"] { flex: 1; }
 
 /* 列表 */
 .card-list { display: flex; flex-direction: column; gap: 10px; }
+
+.list-sentinel { text-align: center; color: var(--fg-muted); font-size: 13px; padding: 10px 0; }
 
 .list-item {
   background: var(--bg-card);
