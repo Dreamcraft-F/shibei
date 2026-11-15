@@ -25,6 +25,7 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  overflow-x: hidden;
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -55,7 +56,7 @@ body {
 
 .list-stats { color: var(--fg-muted); font-size: 13px; margin-bottom: 12px; }
 
-main { flex: 1; padding: 16px; overflow-y: auto; }
+main { flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; }
 
 .view { display: none; }
 .view.active { display: block; }
@@ -91,6 +92,41 @@ input[type="search"] { flex: 1; }
 }
 
 .card.dragging { transition: none; }
+
+.card-stack { position: relative; height: 420px; }
+
+.card-stack > #card {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.card-peek {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(14px) scale(0.95);
+  transition: transform 0.2s ease-out, opacity 0.2s ease-out;
+  will-change: transform, opacity;
+}
+
+.card-peek .card-inner { transition: none; }
+
+.card-peek .card-face { overflow-x: hidden; }
+
+.card-peek .card-front .card-term,
+.card-peek .card-back .card-term { transition: transform 0.2s ease-out; }
+
+.card-peek.dragging .card-front .card-term,
+.card-peek.dragging .card-back .card-term { transition: none; }
+
+.card-peek .card-top button,
+.card-peek .card-hint { visibility: hidden; }
+
+.card-peek.show-controls .card-top button,
+.card-peek.show-controls .card-hint { visibility: visible; }
 
 .card-inner {
   position: relative;

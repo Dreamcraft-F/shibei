@@ -151,6 +151,7 @@
     if (studyCards.length === 0) {
       currentStudyCard = null;
       suppressFlipAnim = false;
+      hidePeek(true);
       $('#studyEmpty').hidden = false;
       cardEl.style.visibility = 'hidden';
       $('.swipe-hint').style.visibility = 'hidden';
@@ -188,12 +189,14 @@
 
   function nextCard() {
     if (studyCards.length === 0) return;
+    hidePeek(true);
     studyIndex = (studyIndex + 1) % studyCards.length;
     renderStudy();
   }
 
   function prevCard() {
     if (studyCards.length === 0) return;
+    hidePeek(true);
     studyIndex = (studyIndex - 1 + studyCards.length) % studyCards.length;
     renderStudy();
   }
@@ -209,6 +212,105 @@
   let cardAnimating = false;
   let cardAnimToken = 0;
   let suppressCardClick = false;
+  let peekEl = null;
+  let peekKey = null;
+
+  function initPeekCard() {
+    if (peekEl || !$('#card')) return;
+    const stack = document.querySelector('.card-stack');
+    const main = $('#card');
+    if (!stack) return;
+    const clone = main.cloneNode(true);
+    clone.id = 'cardPeek';
+    clone.className = 'card card-peek';
+    clone.removeAttribute('style');
+    clone.setAttribute('aria-hidden', 'true');
+    clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    clone.querySelectorAll('button').forEach((btn) => { btn.tabIndex = -1; });
+    stack.insertBefore(clone, main);
+    peekEl = clone;
+  }
+
+  function setPeekContent(card) {
+    if (!peekEl || !card) return;
+    const setText = (sel, text) => {
+      const el = peekEl.querySelector(sel);
+      if (el) el.textContent = text || '';
+    };
+    const setOpt = (sel, text) => {
+      const el = peekEl.querySelector(sel);
+      if (!el) return;
+      el.textContent = text || '';
+      el.style.display = text ? '' : 'none';
+    };
+    setText('.card-front .card-tag', card.category);
+    setText('.card-front .card-term', card.term);
+    setOpt('.card-front .card-phonetic', card.phonetic);
+    setText('.card-back .card-tag', card.category);
+    setText('.card-back .card-term', card.term);
+    setOpt('.card-back .card-literal', card.literal);
+    setText('.card-back .card-def', card.def);
+    setText('.card-back .card-code', card.code);
+    peekEl.classList.toggle('flipped', studyFlipped);
+  }
+
+  function peekTarget(dir) {
+    if (studyCards.length === 0) return null;
+    const idx = (studyIndex - dir + studyCards.length) % studyCards.length;
+    return studyCards[idx] || null;
+  }
+
+  function ensurePeek(dir) {
+    initPeekCard();
+    const card = peekTarget(dir);
+    if (!card || studyCards.length <= 1) return null;
+    if (peekKey !== card.key || peekEl.classList.contains('flipped') !== studyFlipped) {
+      setPeekContent(card);
+      peekKey = card.key;
+    }
+    return card;
+  }
+
+  function updatePeekDrag(dx) {
+    const dir = dx < 0 ? -1 : 1;
+    const card = ensurePeek(dir);
+    if (!card) {
+      hidePeek(false);
+      return;
+    }
+    const p = Math.min(Math.abs(dx) / 220, 1);
+    const rot = -dir * 3 * p;
+    const x = -dx * 0.06;
+    const y = 14 * (1 - p);
+    const scale = 0.95 + 0.05 * p;
+    const contentShift = Math.max(-90, Math.min(90, -dx * 0.6));
+    peekEl.classList.remove('show-controls');
+    peekEl.classList.add('dragging');
+    peekEl.style.opacity = '1';
+    peekEl.style.transform = 'translateX(' + x + 'px) translateY(' + y + 'px) scale(' + scale + ') rotate(' + rot + 'deg)';
+    peekEl.querySelectorAll('.card-term').forEach((el) => {
+      el.style.transform = 'translateX(' + contentShift + 'px)';
+    });
+  }
+
+  function hidePeek(instant) {
+    if (!peekEl) return;
+    peekKey = null;
+    peekEl.classList.remove('show-controls');
+    if (instant) {
+      peekEl.classList.add('dragging');
+      peekEl.style.opacity = '0';
+      peekEl.style.transform = '';
+      peekEl.querySelectorAll('.card-term').forEach((el) => { el.style.transform = ''; });
+      void peekEl.offsetWidth;
+      peekEl.classList.remove('dragging');
+    } else {
+      peekEl.classList.remove('dragging');
+      peekEl.style.opacity = '';
+      peekEl.style.transform = '';
+      peekEl.querySelectorAll('.card-term').forEach((el) => { el.style.transform = ''; });
+    }
+  }
 
   function cancelCardAnimation() {
     cardAnimToken++;
@@ -220,10 +322,10 @@
     if (!animationsEnabled()) return;
     const cardEl = $('#card');
     const rot = Math.max(-10, Math.min(10, dx / 30));
-    const opacity = Math.max(0.45, 1 - Math.abs(dx) / 520);
     cardEl.classList.add('dragging');
     cardEl.style.transform = 'translateX(' + dx + 'px) rotate(' + rot + 'deg)';
-    cardEl.style.opacity = String(opacity);
+    cardEl.style.opacity = '';
+    updatePeekDrag(dx);
   }
 
   function resetCardDrag(instant) {
@@ -239,42 +341,70 @@
       cardEl.style.transform = '';
       cardEl.style.opacity = '';
     }
+    hidePeek(instant);
   }
 
   // dir < 0：向左手势，切下一张；dir > 0：向右手势，切上一张
   function animateCardChange(dir) {
     if (!animationsEnabled()) {
+      hidePeek(true);
       if (dir < 0) nextCard();
       else prevCard();
       return;
     }
     if (cardAnimating || studyCards.length === 0) return;
+
+    const cardEl = $('#card');
+    if (studyCards.length <= 1) {
+      cardEl.classList.add('dragging');
+      cardEl.style.transform = 'translateX(' + (dir < 0 ? -28 : 28) + 'px)';
+      void cardEl.offsetWidth;
+      cardEl.classList.remove('dragging');
+      cardEl.style.transform = '';
+      return;
+    }
+
+    const nextTarget = ensurePeek(dir);
+    if (!nextTarget) {
+      if (dir < 0) nextCard();
+      else prevCard();
+      return;
+    }
+
     cardAnimating = true;
     const token = ++cardAnimToken;
-    const cardEl = $('#card');
     const w = cardEl.offsetWidth || 320;
-    const outX = dir < 0 ? -(w + 80) : (w + 80);
-    const rot = dir < 0 ? -12 : 12;
+    const targetIdx = (studyIndex - dir + studyCards.length) % studyCards.length;
+    $('#studyPos').textContent = (targetIdx + 1) + ' / ' + studyCards.length;
 
     cardEl.classList.remove('dragging');
-    cardEl.style.transform = 'translateX(' + outX + 'px) rotate(' + rot + 'deg)';
+    cardEl.style.transform = 'translateX(' + (dir < 0 ? -(w + 80) : (w + 80)) + 'px) rotate(' + (dir < 0 ? -12 : 12) + 'deg)';
     cardEl.style.opacity = '0';
+
+    peekEl.classList.remove('dragging');
+    peekEl.classList.add('show-controls');
+    peekEl.style.opacity = '1';
+    peekEl.style.transform = 'translateX(0) translateY(0) scale(1) rotate(0deg)';
+    peekEl.querySelectorAll('.card-term').forEach((el) => { el.style.transform = ''; });
 
     setTimeout(() => {
       if (token !== cardAnimToken) return;
-      cardEl.classList.add('dragging');
-      cardEl.style.transform = 'translateX(' + (dir < 0 ? 60 : -60) + 'px)';
-      cardEl.style.opacity = '0';
       if (dir < 0) nextCard();
       else prevCard();
+
+      hidePeek(true);
+      cardEl.classList.add('dragging');
+      cardEl.style.transform = 'scale(1.015)';
+      cardEl.style.opacity = '1';
       void cardEl.offsetWidth;
       cardEl.classList.remove('dragging');
       cardEl.style.transform = '';
       cardEl.style.opacity = '';
+
       setTimeout(() => {
         if (token === cardAnimToken) cardAnimating = false;
-      }, 240);
-    }, 220);
+      }, 160);
+    }, 200);
   }
 
   function speakTextForTerm(term) {
@@ -1974,6 +2104,7 @@
     window.__handleAndroidBack = handleAndroidBack;
     fillCategorySelect($('#studyCategory'), true);
     fillCategorySelect($('#listCategory'), true);
+    initPeekCard();
     bind();
     switchView('study');
     fillAiModel();
