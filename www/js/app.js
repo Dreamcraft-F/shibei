@@ -1,13 +1,14 @@
 (function () {
-  const CUSTOM_KEY = 'java-suji-custom';
-  const DELETED_KEY = 'java-suji-deleted';
-  const OVERRIDES_KEY = 'java-suji-overrides';
   const AI_KEY = 'java-suji-deepseek-key';
   const AI_HISTORY = 'java-suji-ai-history';
   const MODEL_KEY = 'java-suji-model';
   const ENGINE_KEY = 'java-suji-tts-engine';
   const CUSTOM_API_KEY = 'java-suji-custom-api';
   const ANIM_KEY = 'java-suji-anim';
+  const DATA_INDEX_URL = './data/index.json';
+  const DATA_CARDS_URL = './data/cards.json';
+  const DB_NAME = 'java-suji-db';
+  const DB_VERSION = 1;
   const PRESET_MODELS = ['deepseek-flash', 'deepseek-v4-pro'];
   const AI_ADD_SYSTEM = '你是 Java 术语卡片生成助手，根据用户描述生成学习卡片。必须只输出一个 JSON 数组，不要输出任何其他文字、解释或 markdown 代码块标记。数组每项格式：{"term":"术语名","category":"分类名","def":"一句话中文解释","code":"代码示例","literal":"字面义","phonetic":"音标","detail":"详细讲解"}。term 和 def 必填，code、literal、phonetic、detail 可选，没有就省略该字段。detail 是给用户的深入详细讲解，默认不要生成，只有用户明确要求详细讲解时才生成。def 用中文、准确简洁，code 给简短 Java 示例。分类名尽量复用常见分类（如 集合框架、并发与多线程、JVM 与内存、Spring 核心、数据库与 SQL 等）。';
 
@@ -16,60 +17,429 @@
   // ---------- 数据 ----------
   // 所有写操作后清空缓存；读操作只解析一次 localStorage。
   let cardsCache = null;
+  let builtinIndex = null;
+  let builtinCards = [];
+  const seedDetailPromises = new Map();
+  let userData = { custom: [], deleted: [], overrides: {}, order: Object.create(null) };
+  let dbPromise = null;
+  let persistChain = Promise.resolve();
 
   function invalidateCards() { cardsCache = null; }
 
-  function loadCustom() {
-    try { return JSON.parse(localStorage.getItem(CUSTOM_KEY)) || []; }
-    catch { return []; }
+  async function fetchJson(url) {
+    const res = await fetch(url, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(url + ' HTTP ' + res.status);
+    return res.json();
   }
-  function saveCustom(list) { localStorage.setItem(CUSTOM_KEY, JSON.stringify(list)); invalidateCards(); }
 
-  function getDeleted() {
-    try { return JSON.parse(localStorage.getItem(DELETED_KEY)) || []; }
-    catch { return []; }
+  async function loadBuiltinData() {
+    const index = await fetchJson(DATA_INDEX_URL);
+    const cards = await fetchJson(DATA_CARDS_URL);
+    if (!index || !Array.isArray(index.categories)) throw new Error('data/index.json 格式不正确');
+    if (!Array.isArray(cards)) throw new Error('data/cards.json 格式不正确');
+    builtinIndex = index;
+    builtinCards = cards;
+    seedDetailPromises.clear();
+    invalidateCards();
   }
-  function saveDeleted(list) { localStorage.setItem(DELETED_KEY, JSON.stringify(list)); invalidateCards(); }
 
-  function getOverrides() {
-    try { return JSON.parse(localStorage.getItem(OVERRIDES_KEY)) || {}; }
-    catch { return {}; }
+  function loadSeedDetails(category) {
+    if (seedDetailPromises.has(category)) return seedDetailPromises.get(category);
+    const promise = (async () => {
+      const cat = builtinIndex && builtinIndex.categories.find((c) => c.name === category);
+      if (!cat || !cat.detailFile) return {};
+      const obj = await fetchJson('./data/' + cat.detailFile);
+      return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+    })();
+    promise.catch(() => { seedDetailPromises.delete(category); });
+    seedDetailPromises.set(category, promise);
+    return promise;
   }
-  function saveOverrides(o) { localStorage.setItem(OVERRIDES_KEY, JSON.stringify(o)); invalidateCards(); }
+
+  async function loadCardDetail(card) {
+    if (!card) return '';
+    if (card.isCustom) return card.detail || '';
+    const o = getOverrides()[card.term];
+    if (o && hasOwn(o, 'detail')) return card.detail || '';
+    if (card.detail) return card.detail;
+    const details = await loadSeedDetails(card.seedCategory || card.category);
+    return details[card.term] || '';
+  }
+
+  function genId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return 'c:' + window.crypto.randomUUID();
+    }
+    return 'c:' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  }
+
+  function isDangerousKey(key) {
+    return key === '__proto__' || key === 'constructor' || key === 'prototype';
+  }
+
+  function sanitizeOrder(raw) {
+    const out = Object.create(null);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    Object.keys(raw).forEach((cat) => {
+      if (!cat || isDangerousKey(cat)) return;
+      const arr = raw[cat];
+      if (!Array.isArray(arr)) return;
+      const seen = new Set();
+      const clean = [];
+      arr.forEach((id) => {
+        if (typeof id === 'string' && id && !seen.has(id)) {
+          seen.add(id);
+          clean.push(id);
+        }
+      });
+      if (clean.length) out[cat] = clean;
+    });
+    return out;
+  }
+
+  function openDb() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB 不可用'));
+        return;
+      }
+      const req = window.indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('custom')) db.createObjectStore('custom', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('deleted')) db.createObjectStore('deleted', { keyPath: 'term' });
+        if (!db.objectStoreNames.contains('overrides')) db.createObjectStore('overrides', { keyPath: 'term' });
+        if (!db.objectStoreNames.contains('order')) db.createObjectStore('order', { keyPath: 'category' });
+        if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB 打开失败'));
+      req.onblocked = () => reject(new Error('IndexedDB 被阻塞，请关闭其他页面后重试'));
+    });
+    return dbPromise;
+  }
+
+  function idbRequest(req) {
+    return new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB 请求失败'));
+    });
+  }
+
+  async function idbGetAll(store) {
+    const db = await openDb();
+    return idbRequest(db.transaction(store, 'readonly').objectStore(store).getAll());
+  }
+
+  async function idbGet(store, key) {
+    const db = await openDb();
+    return idbRequest(db.transaction(store, 'readonly').objectStore(store).get(key));
+  }
+
+  async function idbPut(store, record) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).put(record);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB 写入失败'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务中止'));
+    });
+  }
+
+  async function idbDelete(store, key) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB 删除失败'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务中止'));
+    });
+  }
+
+  async function idbReplace(store, records) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      const os = tx.objectStore(store);
+      os.clear();
+      records.forEach((record) => os.put(record));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB 写入失败'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务中止'));
+    });
+  }
+
+  function orderRowsToMap(rows) {
+    const raw = Object.create(null);
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      if (row && typeof row.category === 'string' && Array.isArray(row.ids)) raw[row.category] = row.ids;
+    });
+    return sanitizeOrder(raw);
+  }
+
+  function orderMapToRows(map) {
+    return Object.keys(map).map((category) => ({ category: category, ids: map[category] }));
+  }
+
+  function overridesRowsToObject(rows) {
+    const out = {};
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      if (!row || typeof row.term !== 'string' || !row.term) return;
+      if (row.fields && typeof row.fields === 'object' && !Array.isArray(row.fields)) out[row.term] = row.fields;
+    });
+    return out;
+  }
+
+  function overridesObjectToRows(obj) {
+    return Object.keys(obj).map((term) => ({ term: term, fields: obj[term] }));
+  }
+
+  function normalizeUserData(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const custom = (Array.isArray(source.custom) ? source.custom : [])
+      .filter((c) => c && typeof c === 'object' && !Array.isArray(c))
+      .map((c) => (typeof c.id === 'string' && c.id ? c : Object.assign({}, c, { id: genId() })));
+    const deleted = Array.from(new Set((Array.isArray(source.deleted) ? source.deleted : [])
+      .filter((t) => typeof t === 'string' && t)));
+    const overrides = {};
+    if (source.overrides && typeof source.overrides === 'object' && !Array.isArray(source.overrides)) {
+      Object.keys(source.overrides).forEach((term) => {
+        if (!term || isDangerousKey(term)) return;
+        const fields = source.overrides[term];
+        if (fields && typeof fields === 'object' && !Array.isArray(fields)) overrides[term] = fields;
+      });
+    }
+    return { custom: custom, deleted: deleted, overrides: overrides, order: sanitizeOrder(source.order) };
+  }
+
+  async function readAllFromDb() {
+    const [custom, deletedRows, overrideRows, orderRows] = await Promise.all([
+      idbGetAll('custom'),
+      idbGetAll('deleted'),
+      idbGetAll('overrides'),
+      idbGetAll('order')
+    ]);
+    return normalizeUserData({
+      custom: custom,
+      deleted: (Array.isArray(deletedRows) ? deletedRows : []).map((row) => row && row.term),
+      overrides: overridesRowsToObject(overrideRows),
+      order: orderRowsToMap(orderRows)
+    });
+  }
+
+  async function writeAllToDb(data) {
+    await Promise.all([
+      idbReplace('custom', data.custom),
+      idbReplace('deleted', data.deleted.map((term) => ({ term: term }))),
+      idbReplace('overrides', overridesObjectToRows(data.overrides)),
+      idbReplace('order', orderMapToRows(data.order))
+    ]);
+    await idbPut('meta', { key: 'schema', version: 1 });
+  }
+
+  async function loadUserData() {
+    const meta = await idbGet('meta', 'schema');
+    let data;
+    if (meta && meta.version >= 1) {
+      data = await readAllFromDb();
+    } else {
+      data = normalizeUserData({});
+      await writeAllToDb(data);
+    }
+    userData = normalizeUserData(data);
+    invalidateCards();
+  }
+
+  function queuePersist(task) {
+    const run = persistChain.then(task);
+    persistChain = run.catch((e) => { console.error('用户数据持久化失败', e); });
+    return run;
+  }
+
+  function flushUserData() { return persistChain; }
+
+  function loadOrder() { return sanitizeOrder(userData.order); }
+
+  function saveOrder(map) {
+    const clean = sanitizeOrder(map);
+    userData.order = clean;
+    invalidateCards();
+    return queuePersist(() => idbReplace('order', orderMapToRows(clean)));
+  }
+
+  function loadCustom() { return userData.custom.slice(); }
+
+  function saveCustom(list) {
+    const out = (Array.isArray(list) ? list : [])
+      .filter((c) => c && typeof c === 'object' && !Array.isArray(c))
+      .map((c) => (typeof c.id === 'string' && c.id ? c : Object.assign({}, c, { id: genId() })));
+    userData.custom = out;
+    invalidateCards();
+    return queuePersist(() => idbReplace('custom', out));
+  }
+
+  function getDeleted() { return userData.deleted.slice(); }
+
+  function saveDeleted(list) {
+    const out = Array.from(new Set((Array.isArray(list) ? list : []).filter((t) => typeof t === 'string' && t)));
+    userData.deleted = out;
+    invalidateCards();
+    return queuePersist(() => idbReplace('deleted', out.map((term) => ({ term: term }))));
+  }
+
+  function getOverrides() { return userData.overrides; }
+
+  function setOverride(term, fields) {
+    if (!term) return Promise.resolve();
+    const next = fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : {};
+    const overrides = Object.assign({}, userData.overrides);
+    if (Object.keys(next).length) overrides[term] = next;
+    else delete overrides[term];
+    userData.overrides = overrides;
+    invalidateCards();
+    return queuePersist(() => (Object.keys(next).length
+      ? idbPut('overrides', { term: term, fields: next })
+      : idbDelete('overrides', term)));
+  }
+
+  function saveOverrides(o) {
+    const overrides = {};
+    if (o && typeof o === 'object' && !Array.isArray(o)) {
+      Object.keys(o).forEach((term) => {
+        if (!term || isDangerousKey(term)) return;
+        const fields = o[term];
+        if (fields && typeof fields === 'object' && !Array.isArray(fields)) overrides[term] = fields;
+      });
+    }
+    userData.overrides = overrides;
+    invalidateCards();
+    return queuePersist(() => idbReplace('overrides', overridesObjectToRows(overrides)));
+  }
+
+  function orderIdsForCategory(cat, cards, orderMap) {
+    const stored = orderMap[cat] || [];
+    const alive = new Set(cards.map((c) => c.id));
+    const seen = new Set();
+    const out = [];
+    stored.forEach((id) => {
+      if (alive.has(id) && !seen.has(id)) { seen.add(id); out.push(id); }
+    });
+    cards.forEach((c) => {
+      if (!seen.has(c.id)) { seen.add(c.id); out.push(c.id); }
+    });
+    return out;
+  }
 
   function allCards() {
     if (cardsCache) return cardsCache;
     const deleted = new Set(getDeleted());
     const overrides = getOverrides();
-    const builtin = window.JAVA_TERMS
+    const builtin = builtinCards
       .filter((c) => !deleted.has(c.term))
-      .map((c) => ({ ...c, ...(overrides[c.term] || {}), isCustom: false }));
+      .map((c) => ({
+        ...c,
+        ...(overrides[c.term] || {}),
+        seedCategory: c.category,
+        id: 'b:' + c.term,
+        isCustom: false
+      }));
     const custom = loadCustom().map((c) => ({ ...c, isCustom: true }));
-    cardsCache = builtin.concat(custom).map((c, i) => ({
-      ...c,
-      key: c.category + '|' + c.term + '|' + i
-    }));
+    const merged = builtin.concat(custom);
+    const catRank = new Map();
+    const byCat = new Map();
+    merged.forEach((c) => {
+      if (!catRank.has(c.category)) catRank.set(c.category, catRank.size);
+      if (!byCat.has(c.category)) byCat.set(c.category, []);
+      byCat.get(c.category).push(c);
+    });
+    const orderMap = loadOrder();
+    const rank = new Map();
+    byCat.forEach((cards, cat) => {
+      orderIdsForCategory(cat, cards, orderMap).forEach((id, i) => { rank.set(id, i); });
+    });
+    const original = new Map();
+    merged.forEach((c, i) => { if (!original.has(c.id)) original.set(c.id, i); });
+    cardsCache = merged.slice().sort((a, b) => {
+      const ca = catRank.get(a.category) || 0;
+      const cb = catRank.get(b.category) || 0;
+      if (ca !== cb) return ca - cb;
+      const ra = rank.has(a.id) ? rank.get(a.id) : 0;
+      const rb = rank.has(b.id) ? rank.get(b.id) : 0;
+      if (ra !== rb) return ra - rb;
+      return (original.get(a.id) || 0) - (original.get(b.id) || 0);
+    }).map((c) => ({ ...c, key: c.id }));
     return cardsCache;
+  }
+
+  function sameCard(a, b) {
+    if (!a || !b) return false;
+    if (a.id && b.id) return a.id === b.id;
+    return a.term === b.term && a.category === b.category;
+  }
+
+  function removeIdFromOrder(id) {
+    if (!id) return;
+    const map = loadOrder();
+    let changed = false;
+    Object.keys(map).forEach((cat) => {
+      const arr = map[cat].filter((x) => x !== id);
+      if (arr.length !== map[cat].length) {
+        changed = true;
+        if (arr.length) map[cat] = arr;
+        else delete map[cat];
+      }
+    });
+    if (changed) saveOrder(map);
+  }
+
+  function moveIdToCategoryEnd(id, category) {
+    if (!id || !category) return;
+    const map = loadOrder();
+    let changed = false;
+    Object.keys(map).forEach((cat) => {
+      const arr = map[cat].filter((x) => x !== id);
+      if (arr.length !== map[cat].length) {
+        changed = true;
+        if (arr.length) map[cat] = arr;
+        else delete map[cat];
+      }
+    });
+    const target = Array.isArray(map[category]) ? map[category] : [];
+    if (!target.includes(id)) {
+      target.push(id);
+      map[category] = target;
+      changed = true;
+    }
+    if (changed) saveOrder(map);
   }
 
   function deleteCard(card) {
     if (card.isCustom) {
-      saveCustom(loadCustom().filter((x) => !(x.term === card.term && x.category === card.category)));
+      saveCustom(loadCustom().filter((x) => !sameCard(x, card)));
     } else {
       const deleted = getDeleted();
       if (!deleted.includes(card.term)) deleted.push(card.term);
       saveDeleted(deleted);
     }
+    removeIdFromOrder(card.id || ('b:' + card.term));
+  }
+
+  function updateCardData(card, patch) {
+    if (card.isCustom) {
+      saveCustom(loadCustom().map((x) => sameCard(x, card) ? { ...x, ...patch } : x));
+    } else {
+      const next = { ...(getOverrides()[card.term] || {}), ...patch };
+      setOverride(card.term, next);
+    }
   }
 
   function updateCard(card, patch) {
-    if (card.isCustom) {
-      saveCustom(loadCustom().map((x) =>
-        (x.term === card.term && x.category === card.category) ? { ...x, ...patch } : x));
-    } else {
-      const o = getOverrides();
-      o[card.term] = { ...(o[card.term] || {}), ...patch };
-      saveOverrides(o);
+    updateCardData(card, patch);
+    if (patch.category !== undefined && patch.category !== card.category) {
+      moveIdToCategoryEnd(card.id || ('b:' + card.term), patch.category);
     }
   }
 
@@ -81,12 +451,13 @@
   function exportData() {
     const data = {
       app: 'java-suji',
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       data: {
         custom: loadCustom(),
         deleted: getDeleted(),
-        overrides: getOverrides()
+        overrides: getOverrides(),
+        order: loadOrder()
       }
     };
     const json = JSON.stringify(data, null, 2);
@@ -106,15 +477,36 @@
     URL.revokeObjectURL(url);
   }
 
+  function prepareImportedCustom(rawList, blockedIds) {
+    if (!Array.isArray(rawList)) return null;
+    const used = new Set(blockedIds || builtinCards.map((c) => 'b:' + c.term));
+    return rawList.filter((c) => c && typeof c === 'object').map((c) => {
+      let id = (typeof c.id === 'string' && c.id && !used.has(c.id)) ? c.id : genId();
+      while (used.has(id)) id = genId();
+      used.add(id);
+      return { ...c, id: id };
+    });
+  }
+
   function importData(file) {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const obj = JSON.parse(reader.result);
         const d = (obj && obj.data) || obj;
-        if (d.custom) saveCustom(d.custom);
-        if (d.deleted) saveDeleted(d.deleted);
-        if (d.overrides) saveOverrides(d.overrides);
+        const deleted = Array.isArray(d.deleted) ? d.deleted : getDeleted();
+        const deletedSet = new Set(deleted);
+        const liveBuiltinIds = new Set(builtinCards
+          .filter((c) => !deletedSet.has(c.term))
+          .map((c) => 'b:' + c.term));
+        const custom = prepareImportedCustom(d.custom, liveBuiltinIds);
+        const tasks = [];
+        if (custom) tasks.push(saveCustom(custom));
+        if (Array.isArray(d.deleted)) tasks.push(saveDeleted(d.deleted));
+        if (d.overrides && typeof d.overrides === 'object') tasks.push(saveOverrides(d.overrides));
+        if (d.order && typeof d.order === 'object' && !Array.isArray(d.order)) tasks.push(saveOrder(d.order));
+        await Promise.all(tasks);
+        undoSnapshot = null;
         refreshAfterDataChange();
         alert('导入成功');
       } catch (e) {
@@ -468,10 +860,12 @@
 
   let detailTerm = null;
 
-  function openDetail() {
+  async function openDetail() {
     const c = studyCards[studyIndex];
     if (!c) return;
-    detailTerm = c.term;
+    const term = c.term;
+    const cardId = c.id;
+    detailTerm = term;
     $('#detailTag').textContent = c.category;
     $('#detailTerm').textContent = c.term;
     $('#detailPhonetic').textContent = c.phonetic || '';
@@ -481,10 +875,28 @@
     $('#detailDef').textContent = c.def;
     $('#detailCode').textContent = c.code || '';
     $('#detailCode').style.display = c.code ? '' : 'none';
-    $('#detailDetail').innerHTML = c.detail ? renderMarkdown(c.detail) : '';
-    $('#detailDetail').style.display = c.detail ? '' : 'none';
-    $('#detailDetailTitle').style.display = c.detail ? '' : 'none';
+    const maybeHasDetail = hasCardDetail(c);
+    $('#detailDetail').innerHTML = maybeHasDetail ? '详细讲解加载中…' : '';
+    $('#detailDetail').style.display = maybeHasDetail ? '' : 'none';
+    $('#detailDetailTitle').style.display = maybeHasDetail ? '' : 'none';
     $('#detailBackdrop').classList.add('open');
+
+    let detail = '';
+    try {
+      detail = c.detail || await loadCardDetail(c);
+    } catch (e) {
+      if (detailTerm !== term) return;
+      $('#detailDetail').textContent = '详细讲解加载失败，请重试';
+      $('#detailDetail').style.display = '';
+      $('#detailDetailTitle').style.display = '';
+      return;
+    }
+    if (detailTerm !== term) return;
+    const current = studyCards[studyIndex];
+    if (!current || current.id !== cardId) return;
+    $('#detailDetail').innerHTML = detail ? renderMarkdown(detail) : '';
+    $('#detailDetail').style.display = detail ? '' : 'none';
+    $('#detailDetailTitle').style.display = detail ? '' : 'none';
   }
 
   function closeDetail() {
@@ -751,16 +1163,20 @@
     sel.value = cur;
   }
 
-  function buildAiSystemPrompt() {
+  async function buildAiSystemPrompt() {
     let p = '你是「拾贝」Java 术语卡片 App 的 AI 助手，用简洁准确的中文回答 Java/后端问题。';
     const all = allCards();
     const cats = categories();
     p += '\n\n【卡片库状态】现有 ' + all.length + ' 张卡片，分类：' + (cats.length ? cats.join('、') : '无') + '。';
     if (currentStudyCard) {
+      let detail = currentStudyCard.detail || '';
+      if (!detail) {
+        try { detail = await loadCardDetail(currentStudyCard); } catch (e) {}
+      }
       p += '\n\n【当前卡片（用户此刻正在学习，以此为准）】术语「' + currentStudyCard.term + '」（分类：' + currentStudyCard.category + '），解释：「' + currentStudyCard.def + '」' +
         (currentStudyCard.code ? '，代码示例：「' + currentStudyCard.code + '」' : '');
-      if (currentStudyCard.detail) {
-        p += '。该卡片有「详细讲解」，摘要：「' + currentStudyCard.detail.slice(0, 200) + (currentStudyCard.detail.length > 200 ? '…' : '') + '」（完整内容可用 get_card 获取）';
+      if (detail) {
+        p += '。该卡片有「详细讲解」，摘要：「' + detail.slice(0, 200) + (detail.length > 200 ? '…' : '') + '」（完整内容可用 get_card 获取）';
       } else {
         p += '。该卡片暂无「详细讲解」。';
       }
@@ -774,9 +1190,15 @@
       '\n- 搜索（本地模糊匹配术语/解释/分类）：{"action":"search_cards","query":"关键词","limit":10}' +
       '\n- 读单卡完整内容：{"action":"get_card","term":"术语"}' +
       '\n- 读当前卡：{"action":"get_current_card"}' +
-      '\n- 添加（支持批量，一次确认）：{"action":"add_cards","cards":[{"term":"术语","def":"解释","category":"分类","code":"代码","literal":"字面义","phonetic":"音标","detail":"详细讲解"}]}' +
+      '\n- 添加（支持批量，一次确认；可在分类内插入）：{"action":"add_cards","cards":[{"term":"术语","def":"解释","category":"分类","after":"同分类已存在的术语","code":"代码","literal":"字面义","phonetic":"音标","detail":"详细讲解"}]}' +
+      '\n  · 锚点 after / before 二选一，也可用 "position":"start|end"；省略锚点表示 end。锚点必须与卡片同分类且是真实术语；禁止数字序号或索引。' +
+      '\n  · 批量按 cards 数组顺序逐张落位；可以引用本批中排在当前卡前面的新卡，不能引用排在后面的新卡。' +
+      '\n  · 若 term 已存在或批内重复，整批失败（already_exists / duplicate_in_batch），请先去重。' +
+      '\n  · category 要使用 list_categories 里的完整名称；写一个不存在的名字（例如已有「并发与多线程」时写「并发」）会新建分类，不会自动并入旧分类。' +
       '\n- 直接改字段（不经过 AI 改写；patch 里 term 表示改名）：{"action":"update_cards","terms":["术语"],"patch":{"def":"新解释","category":"新分类"}}；selector 也支持 category/categories，全库必须写 "all":true' +
-      '\n- 移动分类：{"action":"move_cards","terms":["术语"],"to":"新分类"}；selector 同上' +
+      '\n- 移动/分类内移动：{"action":"move_cards","terms":["术语"],"to":"目标分类","after":"可选锚点"}；也支持 before / position:"start|end"；不写 to 时只能在单一分类内移动' +
+      '\n- 分类内整类重排：{"action":"reorder_cards","category":"分类名","terms":["该分类完整、无重复、无未知的术语列表"]}' +
+      '\n  · 必须先用 list_terms(category) 取到完整术语；terms 必须覆盖该分类全部卡片；遗漏、未知、重复会整批失败且不写入。' +
       '\n- AI 改写：{"action":"rebuild_cards","terms":["术语"],"instruction":"改写要求","fields":["def","code"]}；fields 可选' +
       '\n- 写详细讲解：{"action":"set_detail","terms":["术语"],"detail":"详细内容"}（不填 terms/term 则当前卡）' +
       '\n- 清空详细讲解：{"action":"clear_detail","terms":["术语"]}（不填则当前卡）' +
@@ -787,10 +1209,15 @@
       '\n- 切换分类筛选：{"action":"set_filter","category":"分类名"}（空字符串=全部）' +
       '\n- 朗读：{"action":"speak","term":"可选，默认当前卡"}' +
       '\n【规则】' +
-      '\n1. 不确定术语或分类是否准确时，先 search_cards / list_categories，不要猜；terms 必须是库里真实存在的术语。' +
+      '\n1. 不确定术语或分类是否准确时，先 search_cards / list_categories / list_terms，不要猜；terms 选择器、锚点、reorder_cards 的术语必须是库里真实存在的术语；只有 add_cards 的 term 是新术语。' +
       '\n2. 批量操作优先用 terms / category / categories，不要一条条调用；全库操作必须显式 "all":true（删除尤其如此）。' +
-      '\n3. 工具结果以【工具结果】消息返回 JSON：ok:true 表示成功；ok:false 时按 error/hint 修正后再试，或向用户说明。error 为 cancelled 表示用户拒绝，不要重试。' +
-      '\n4. 不需要操作、只是提问时，直接用文字回答；工具执行完后也用简短中文总结，不要再输出 JSON。';
+      '\n3. 排序不要用序号、第几张、索引或数字 position；只能使用真实术语作为 after/before 锚点，或 position:"start"|"end"。' +
+      '\n4. 需要先读后写时（例如排序、带锚点添加），先只调用 list_terms，等收到工具结果后再在下一轮发起写调用；不要在同一轮同时输出 list_terms 和依赖它的写操作。' +
+      '\n5. reorder_cards 一次只排一个分类，必须提供完整术语列表；add_cards 批量添加时，锚点只能引用本批中排在当前卡前面的新卡。' +
+      '\n6. 同一轮工具中，如果 add/move/reorder 返回 ok:false 或 cancelled，不要继续执行后续写操作。' +
+      '\n7. 工具结果以【工具结果】消息返回 JSON：ok:true 表示全部成功；ok:false 时按 error/hint、missing、unknown、duplicates、candidates 修正后再试。error 为 cancelled 表示用户拒绝，不要重试。' +
+      '\n8. 如果用户明确要求把卡片放在某个术语后面或前面，但该术语不存在，不要擅自改成末尾；应报告 anchor_not_found，或先向用户确认。' +
+      '\n9. 不需要操作、只是提问时，直接用文字回答；工具执行完后也用简短中文总结，不要再输出 JSON。';
     return p;
   }
 
@@ -868,8 +1295,35 @@
     return objs;
   }
 
+  function parseDsmlToolCalls(content) {
+    const text = String(content || '');
+    const calls = [];
+    const tag = '(?:｜|\\|)DSML(?:｜|\\|)';
+    const invokeRe = new RegExp('<' + tag + '\\s*invoke\\s+name="([^"]+)"\\s*>([\\s\\S]*?)<\\/' + tag + '\\s*invoke>', 'g');
+    let invoke;
+    while ((invoke = invokeRe.exec(text))) {
+      const tool = { action: invoke[1] };
+      const body = invoke[2];
+      const paramRe = new RegExp('<' + tag + '\\s*parameter\\s+name="([^"]+)"(?:\\s+string="(true|false)")?\\s*>([\\s\\S]*?)<\\/' + tag + '\\s*parameter>', 'g');
+      let param;
+      while ((param = paramRe.exec(body))) {
+        const key = param[1];
+        const raw = param[3].trim();
+        let value = raw;
+        if (param[2] !== 'true' || /^[\[{]/.test(raw)) {
+          try { value = JSON.parse(raw); } catch (e) { value = raw; }
+        }
+        tool[key] = value;
+      }
+      calls.push(tool);
+    }
+    return calls;
+  }
+
   function parseToolCalls(content) {
-    return extractJsonObjects(content).filter((o) => o && o.action);
+    const jsonCalls = extractJsonObjects(content).filter((o) => o && o.action);
+    const dsmlCalls = parseDsmlToolCalls(content);
+    return jsonCalls.concat(dsmlCalls);
   }
 
   function parseToolCall(content) {
@@ -913,6 +1367,7 @@
 
   // ---------- 工具：选择器与卡片操作 ----------
   const PATCH_FIELDS = ['term', 'category', 'def', 'code', 'literal', 'phonetic', 'detail'];
+  const MAX_REORDER_TERMS = 500;
   const LEGACY_ACTIONS = {
     add_card: 'add_cards',
     delete_card: 'delete_cards',
@@ -921,6 +1376,8 @@
     add_detail: 'set_detail',
     get_detail: 'get_card'
   };
+  const READ_ACTIONS = new Set(['get_stats', 'list_categories', 'list_terms', 'list_cards', 'search_cards', 'get_card', 'get_current_card']);
+  const WRITE_ACTIONS = new Set(['add_cards', 'update_cards', 'move_cards', 'rebuild_cards', 'set_detail', 'clear_detail', 'delete_cards', 'reorder_cards', 'undo']);
   let undoSnapshot = null;
 
   function asArray(v) {
@@ -1027,17 +1484,315 @@
     };
   }
 
+  function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  function normalizeCategoryName(s) {
+    return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
+  }
+
+  function resolveAddCategory(raw) {
+    const name = String(raw == null ? '' : raw).trim();
+    if (!name) return { category: '自定义' };
+    const cats = categories();
+    const exact = cats.filter((c) => c === name);
+    if (exact.length === 1) return { category: exact[0] };
+    if (exact.length > 1) return { error: 'category_ambiguous', categories: exact };
+    const norm = normalizeCategoryName(name);
+    const normMatches = cats.filter((c) => normalizeCategoryName(c) === norm);
+    if (normMatches.length === 1) return { category: normMatches[0] };
+    if (normMatches.length > 1) return { error: 'category_ambiguous', categories: normMatches };
+    return { category: name };
+  }
+
+  function resolveExistingCategory(raw) {
+    const name = String(raw == null ? '' : raw).trim();
+    if (!name) return { error: 'missing_category' };
+    const cats = categories();
+    const exact = cats.filter((c) => c === name);
+    if (exact.length === 1) return { category: exact[0] };
+    if (exact.length > 1) return { error: 'category_ambiguous', categories: exact };
+    const norm = normalizeCategoryName(name);
+    const normMatches = cats.filter((c) => normalizeCategoryName(c) === norm);
+    if (normMatches.length === 1) return { category: normMatches[0] };
+    if (normMatches.length > 1) return { error: 'category_ambiguous', categories: normMatches };
+    const fuzzy = cats.filter((c) => c.includes(name) || name.includes(c));
+    if (fuzzy.length === 1) return { category: fuzzy[0] };
+    if (fuzzy.length > 1) return { error: 'category_ambiguous', categories: fuzzy };
+    return { error: 'category_not_found', categories: cats };
+  }
+
+  function parseAnchorSpec(src) {
+    if (!src || typeof src !== 'object') return { type: 'end' };
+    if (hasOwn(src, 'index') && src.index !== undefined && src.index !== null && src.index !== '') {
+      return { error: 'unsupported_numeric_position', hint: '请使用真实术语作为 after/before 锚点' };
+    }
+    const keys = ['after', 'before', 'position'].filter((k) =>
+      hasOwn(src, k) && src[k] !== undefined && src[k] !== null);
+    if (keys.length === 0) return { type: 'end' };
+    if (keys.length > 1) return { error: 'anchor_conflict', fields: keys };
+    const key = keys[0];
+    const value = src[key];
+    if (key === 'position') {
+      const text = String(value).trim();
+      if (typeof value === 'number' || /^\d+$/.test(text)) {
+        return { error: 'unsupported_numeric_position', hint: '请使用真实术语作为 after/before 锚点' };
+      }
+      const pos = text.toLowerCase();
+      if (pos !== 'start' && pos !== 'end') return { error: 'invalid_position', allowed: ['start', 'end'] };
+      return { type: pos };
+    }
+    const term = String(value == null ? '' : value).trim();
+    if (!term) return { error: 'empty_anchor' };
+    return { type: key, term: term };
+  }
+
+  function normalizeAddCards(tool) {
+    let input;
+    if (Array.isArray(tool.cards)) input = tool.cards;
+    else if (tool.cards && typeof tool.cards === 'object') input = [tool.cards];
+    else input = [{
+      term: tool.term,
+      category: tool.category,
+      def: tool.def,
+      code: tool.code,
+      literal: tool.literal,
+      phonetic: tool.phonetic,
+      detail: tool.detail,
+      after: tool.after,
+      before: tool.before,
+      position: tool.position
+    }];
+    const defaultCategory = tool.category;
+    const defaultHasCategory = defaultCategory != null && String(defaultCategory).trim() !== '';
+    const toolAnchor = { after: tool.after, before: tool.before, position: tool.position, index: tool.index };
+    const items = [];
+    const errors = [];
+    input.forEach((c, index) => {
+      if (!c || typeof c !== 'object') {
+        errors.push({ code: 'invalid_card', index: index, hint: 'cards 每项必须是对象' });
+        return;
+      }
+      const term = String(c.term == null ? '' : c.term).trim();
+      const def = String(c.def == null ? '' : c.def).trim();
+      if (!term || !def) {
+        errors.push({ code: 'invalid_cards', index: index, term: term, hint: '每张卡必须包含 term 和 def' });
+        return;
+      }
+      const cardHasCategory = c.category != null && String(c.category).trim() !== '';
+      const categoryRaw = cardHasCategory ? c.category : defaultCategory;
+      const categoryProvided = cardHasCategory || defaultHasCategory;
+      const catRes = resolveAddCategory(categoryRaw);
+      if (catRes.error) {
+        errors.push({ code: catRes.error, index: index, term: term, categories: catRes.categories });
+        return;
+      }
+      const cardHasAnchor = hasOwn(c, 'after') || hasOwn(c, 'before') || hasOwn(c, 'position') || hasOwn(c, 'index');
+      const anchor = parseAnchorSpec(cardHasAnchor ? c : toolAnchor);
+      if (anchor.error) {
+        const err = Object.assign({ index: index, term: term }, anchor);
+        err.code = anchor.error;
+        delete err.error;
+        errors.push(err);
+        return;
+      }
+      if ((anchor.type === 'after' || anchor.type === 'before' || anchor.type === 'start') && !categoryProvided) {
+        errors.push({ code: 'category_required_for_anchor', index: index, term: term, hint: '带锚点添加时必须提供 category' });
+        return;
+      }
+      if ((anchor.type === 'after' || anchor.type === 'before') &&
+          normalizeTerm(anchor.term) === normalizeTerm(term)) {
+        errors.push({ code: 'anchor_is_self', index: index, term: term, anchor: anchor.term });
+        return;
+      }
+      items.push({
+        index: index,
+        term: term,
+        category: catRes.category,
+        def: def,
+        code: c.code ? String(c.code).trim() : '',
+        literal: c.literal ? String(c.literal).trim() : '',
+        phonetic: c.phonetic ? String(c.phonetic).trim() : '',
+        detail: c.detail ? String(c.detail).trim() : '',
+        anchor: anchor
+      });
+    });
+    return { items: items, errors: errors };
+  }
+
+  function planAddCards(items) {
+    const existing = new Set(allCards().map((c) => normalizeTerm(c.term)));
+    const batchNorm = new Map();
+    const errors = [];
+    items.forEach((it) => {
+      const n = normalizeTerm(it.term);
+      if (!n) {
+        errors.push({ code: 'empty_term', index: it.index, term: it.term });
+        return;
+      }
+      if (existing.has(n)) {
+        errors.push({ code: 'already_exists', index: it.index, term: it.term });
+        return;
+      }
+      if (batchNorm.has(n)) {
+        errors.push({ code: 'duplicate_in_batch', index: it.index, term: it.term, firstIndex: batchNorm.get(n) });
+        return;
+      }
+      batchNorm.set(n, it.index);
+    });
+    if (errors.length) return { errors: errors };
+
+    items.forEach((it) => {
+      const a = it.anchor;
+      if (a.type !== 'after' && a.type !== 'before') return;
+      const j = batchNorm.get(normalizeTerm(a.term));
+      if (j === undefined) return;
+      if (j === it.index) {
+        errors.push({ code: 'anchor_is_self', index: it.index, term: it.term, anchor: a.term });
+      } else if (j > it.index) {
+        errors.push({
+          code: 'anchor_pending_in_batch',
+          index: it.index,
+          term: it.term,
+          anchor: a.term,
+          anchorIndex: j,
+          hint: '锚点卡在数组中排在当前卡之后；请把锚点卡移到前面或分两次添加'
+        });
+      } else if (items[j].category !== it.category) {
+        errors.push({
+          code: 'anchor_wrong_category',
+          index: it.index,
+          term: it.term,
+          anchor: a.term,
+          category: items[j].category
+        });
+      }
+    });
+    if (errors.length) return { errors: errors };
+
+    const states = new Map();
+    const affected = new Set();
+    function stateFor(cat) {
+      if (!states.has(cat)) {
+        const live = allCards().filter((c) => c.category === cat);
+        states.set(cat, {
+          entries: live.map((c) => ({ id: c.id, term: c.term })),
+          startCursor: 0,
+          afterTail: new Map()
+        });
+      }
+      return states.get(cat);
+    }
+
+    function resolveAnchor(state, term, item) {
+      const raw = String(term == null ? '' : term).trim();
+      if (!raw) return { error: 'empty_anchor' };
+      let matches = state.entries.filter((e) => e.term === raw);
+      if (matches.length === 0) {
+        const n = normalizeTerm(raw);
+        matches = state.entries.filter((e) => normalizeTerm(e.term) === n);
+      }
+      if (matches.length === 1) {
+        return { index: state.entries.indexOf(matches[0]), entry: matches[0] };
+      }
+      if (matches.length > 1) {
+        return { error: 'term_ambiguous', term: raw, candidates: matches.map((e) => e.term) };
+      }
+      const other = allCards().find((c) => normalizeTerm(c.term) === normalizeTerm(raw));
+      if (other && other.category !== item.category) {
+        return { error: 'anchor_wrong_category', term: raw, category: other.category };
+      }
+      if (getDeleted().some((t) => normalizeTerm(t) === normalizeTerm(raw))) {
+        return { error: 'anchor_deleted', term: raw, hint: '该术语已被删除，无法作为锚点' };
+      }
+      return {
+        error: 'anchor_not_found',
+        term: raw,
+        candidates: state.entries.slice(0, 10).map((e) => e.term)
+      };
+    }
+
+    const newCards = [];
+    for (const it of items) {
+      const state = stateFor(it.category);
+      affected.add(it.category);
+      const id = genId();
+      const a = it.anchor;
+      let pos;
+      if (a.type === 'start') {
+        pos = state.startCursor;
+        state.startCursor++;
+      } else if (a.type === 'end') {
+        pos = state.entries.length;
+      } else {
+        const found = resolveAnchor(state, a.term, it);
+        if (found.error) {
+          const err = Object.assign({ index: it.index, term: it.term, anchor: a.term }, found);
+          err.code = found.error;
+          delete err.error;
+          errors.push(err);
+          break;
+        }
+        if (a.type === 'after') {
+          const tailId = state.afterTail.get(found.entry.id) || found.entry.id;
+          const tailIdx = state.entries.findIndex((e) => e.id === tailId);
+          pos = tailIdx + 1;
+          state.afterTail.set(found.entry.id, id);
+        } else {
+          pos = found.index;
+        }
+      }
+      state.entries.splice(pos, 0, { id: id, term: it.term });
+      newCards.push({
+        id: id,
+        term: it.term,
+        category: it.category,
+        def: it.def,
+        code: it.code,
+        literal: it.literal,
+        phonetic: it.phonetic,
+        detail: it.detail
+      });
+    }
+    if (errors.length) return { errors: errors };
+    return { newCards: newCards, states: states, affected: Array.from(affected) };
+  }
+
+  function orderPreviewFor(category, limit) {
+    const cards = allCards().filter((c) => c.category === category);
+    const max = limit || 20;
+    return {
+      category: category,
+      count: cards.length,
+      terms: cards.slice(0, max).map((c) => c.term),
+      truncated: cards.length > max
+    };
+  }
+
+  function hasCardDetail(c) {
+    if (!c) return false;
+    if (c.isCustom) return !!c.detail;
+    const o = getOverrides()[c.term];
+    if (o && hasOwn(o, 'detail')) return !!c.detail;
+    return !!(c.hasDetail || c.detail);
+  }
+
   function cardBrief(c) {
     return {
       term: c.term,
       category: c.category,
       def: (c.def || '').slice(0, 80),
       custom: !!c.isCustom,
-      hasDetail: !!c.detail
+      hasDetail: hasCardDetail(c)
     };
   }
 
-  function cardFull(c) {
+  async function cardFull(c) {
+    let detail = c.detail || '';
+    if (!detail) {
+      try { detail = await loadCardDetail(c); } catch (e) {}
+    }
     return {
       term: c.term,
       category: c.category,
@@ -1045,7 +1800,7 @@
       code: c.code || '',
       literal: c.literal || '',
       phonetic: c.phonetic || '',
-      detail: c.detail || '',
+      detail: detail,
       custom: !!c.isCustom
     };
   }
@@ -1086,16 +1841,24 @@
   }
 
   function snapshotData() {
-    undoSnapshot = JSON.stringify({ custom: loadCustom(), deleted: getDeleted(), overrides: getOverrides() });
+    undoSnapshot = {
+      custom: userData.custom,
+      deleted: userData.deleted,
+      overrides: userData.overrides,
+      order: userData.order
+    };
   }
 
-  function restoreSnapshot() {
+  async function restoreSnapshot() {
     if (!undoSnapshot) return false;
     try {
-      const s = JSON.parse(undoSnapshot);
-      saveCustom(s.custom || []);
-      saveDeleted(s.deleted || []);
-      saveOverrides(s.overrides || {});
+      const s = undoSnapshot;
+      await Promise.all([
+        saveCustom(s.custom || []),
+        saveDeleted(s.deleted || []),
+        saveOverrides(s.overrides || {}),
+        saveOrder(s.order || {})
+      ]);
       undoSnapshot = null;
       refreshAfterDataChange();
       return true;
@@ -1104,7 +1867,7 @@
     }
   }
 
-  function applyPatch(card, patch) {
+  async function applyPatch(card, patch) {
     const clean = {};
     PATCH_FIELDS.forEach((f) => {
       if (patch[f] !== undefined && patch[f] !== null) clean[f] = String(patch[f]).trim();
@@ -1115,22 +1878,31 @@
       const dup = allCards().find((c) =>
         c.term.toLowerCase() === clean.term.toLowerCase() && !(c.term === card.term && c.category === card.category));
       if (dup) return { ok: false, reason: 'duplicate_term' };
+      let detail = card.detail || '';
+      if (clean.detail !== undefined) {
+        detail = clean.detail;
+      } else if (!card.isCustom && card.hasDetail) {
+        try { detail = card.detail || await loadCardDetail(card); }
+        catch (e) { return { ok: false, reason: 'detail_load_failed' }; }
+      }
       const merged = {
+        id: card.id || (card.isCustom ? genId() : 'b:' + card.term),
         term: clean.term,
         category: clean.category !== undefined ? clean.category : card.category,
         def: clean.def !== undefined ? clean.def : (card.def || ''),
         code: clean.code !== undefined ? clean.code : (card.code || ''),
         literal: clean.literal !== undefined ? clean.literal : (card.literal || ''),
         phonetic: clean.phonetic !== undefined ? clean.phonetic : (card.phonetic || ''),
-        detail: clean.detail !== undefined ? clean.detail : (card.detail || '')
+        detail: detail
       };
       if (card.isCustom) {
-        saveCustom(loadCustom().map((x) => (x.term === card.term && x.category === card.category) ? merged : x));
+        saveCustom(loadCustom().map((x) => sameCard(x, card) ? merged : x));
       } else {
         saveCustom(loadCustom().concat([merged]));
         const deleted = getDeleted();
         if (!deleted.includes(card.term)) { deleted.push(card.term); saveDeleted(deleted); }
       }
+      if (merged.category !== card.category) moveIdToCategoryEnd(merged.id, merged.category);
       return { ok: true, renamed: clean.term };
     }
 
@@ -1211,14 +1983,16 @@
 
     if (action === 'list_cards') {
       let cards = allCards();
+      let matchedCategories = null;
       if (tool.category != null && String(tool.category).trim()) {
         const m = matchCategory(tool.category);
         if (!m.categories.length) return toolError('category_not_found', { category: tool.category, categories: categories() });
+        matchedCategories = m.categories;
         cards = m.cards;
       }
       const kw = String(tool.keyword || '').trim().toLowerCase();
       if (kw) {
-        cards = cards.filter((c) => [c.term, c.def, c.category, c.literal, c.detail]
+        cards = cards.filter((c) => [c.term, c.def, c.category, c.literal]
           .some((v) => String(v || '').toLowerCase().includes(kw)));
       }
       const total = cards.length;
@@ -1232,15 +2006,18 @@
         offset: offset,
         limit: limit,
         hasMore: offset + page.length < total,
+        matchedCategories: matchedCategories || undefined,
         cards: page.map(cardBrief)
       });
     }
 
     if (action === 'list_terms') {
       let cards = allCards();
+      let matchedCategories = null;
       if (tool.category != null && String(tool.category).trim()) {
         const m = matchCategory(tool.category);
         if (!m.categories.length) return toolError('category_not_found', { category: tool.category, categories: categories() });
+        matchedCategories = m.categories;
         cards = m.cards;
       }
       const kw = String(tool.keyword || '').trim().toLowerCase();
@@ -1252,6 +2029,7 @@
         ok: true,
         action: 'list_terms',
         total: cards.length,
+        matchedCategories: matchedCategories || undefined,
         terms: cards.map((c) => c.term)
       });
     }
@@ -1283,7 +2061,7 @@
           hint: suggestions.length ? '是否指这些卡片？' : '先用 list_cards 或 search_cards 查找'
         });
       }
-      return toolResult({ ok: true, action: 'get_card', card: cardFull(card) });
+      return toolResult({ ok: true, action: 'get_card', card: await cardFull(card) });
     }
 
     if (action === 'get_current_card') {
@@ -1294,37 +2072,157 @@
         action: 'get_current_card',
         position: studyIndex + 1,
         total: studyCards.length,
-        card: cardFull(card)
+        card: await cardFull(card)
       });
     }
 
     if (action === 'add_cards') {
-      let input;
-      if (Array.isArray(tool.cards)) input = tool.cards;
-      else if (tool.cards && typeof tool.cards === 'object') input = [tool.cards];
-      else input = [{ term: tool.term, category: tool.category, def: tool.def, code: tool.code, literal: tool.literal, phonetic: tool.phonetic, detail: tool.detail }];
-      const valid = validateCards(input);
-      if (!valid.length) return toolError('invalid_cards', { hint: '每张卡必须包含 term 和 def' });
+      const normalized = normalizeAddCards(tool);
+      if (!normalized.items.length) {
+        return toolResult({
+          ok: false,
+          action: 'add_cards',
+          changed: false,
+          errors: normalized.errors.length ? normalized.errors : [{ code: 'invalid_cards' }],
+          hint: '每张卡必须包含 term 和 def'
+        });
+      }
+      if (normalized.errors.length) {
+        return toolResult({ ok: false, action: 'add_cards', changed: false, errors: normalized.errors, hint: '整批未写入，修正后重试' });
+      }
+      const plan = planAddCards(normalized.items);
+      if (plan.errors && plan.errors.length) {
+        return toolResult({ ok: false, action: 'add_cards', changed: false, errors: plan.errors, hint: '整批未写入，修正后重试' });
+      }
 
-      const existing = new Set(allCards().map((c) => normalizeTerm(c.term)));
-      const kept = [];
-      const skipped = [];
-      valid.forEach((c) => {
-        const k = normalizeTerm(c.term);
-        if (!k) { skipped.push({ term: c.term, reason: 'empty_term' }); return; }
-        if (existing.has(k)) { skipped.push({ term: c.term, reason: 'duplicate' }); return; }
-        existing.add(k);
-        kept.push(c);
-      });
-      if (!kept.length) return toolResult({ ok: true, action: 'add_cards', added: 0, skipped: skipped, hint: '全部已存在，未添加' });
-
-      if (!confirm('将添加 ' + kept.length + ' 张卡片：\n' + kept.slice(0, 20).map((c) => '· ' + c.term + '（' + c.category + '）').join('\n') + (kept.length > 20 ? '\n…' : ''))) {
+      const preview = plan.newCards.slice(0, 20).map((c) => '· ' + c.term + '（' + c.category + '）').join('\n') +
+        (plan.newCards.length > 20 ? '\n…' : '');
+      if (!confirm('将添加 ' + plan.newCards.length + ' 张卡片：\n' + preview)) {
         return toolError('cancelled', { hint: '用户取消了添加，不要重试' });
       }
       snapshotData();
-      saveCustom(loadCustom().concat(kept));
+      const oldCustom = loadCustom();
+      const oldOrder = loadOrder();
+      const newOrder = loadOrder();
+      plan.affected.forEach((cat) => {
+        newOrder[cat] = plan.states.get(cat).entries.map((e) => e.id);
+      });
+      try {
+        await Promise.all([saveCustom(oldCustom.concat(plan.newCards)), saveOrder(newOrder)]);
+      } catch (e) {
+        try { await Promise.all([saveCustom(oldCustom), saveOrder(oldOrder)]); } catch (err) {}
+        return toolError('storage_error', { message: e.message, hint: '保存失败，已尝试回滚' });
+      }
       refreshAfterDataChange();
-      return toolResult({ ok: true, action: 'add_cards', added: kept.length, terms: kept.map((c) => c.term), skipped: skipped });
+      const positions = new Map();
+      plan.affected.forEach((cat) => {
+        plan.states.get(cat).entries.forEach((e, i) => positions.set(e.id, i + 1));
+      });
+      return toolResult({
+        ok: true,
+        action: 'add_cards',
+        changed: true,
+        added: plan.newCards.length,
+        items: plan.newCards.map((c) => ({
+          term: c.term,
+          category: c.category,
+          position: positions.get(c.id) || 0
+        })),
+        orderPreview: plan.affected.map((cat) => orderPreviewFor(cat)),
+        undo: true
+      });
+    }
+
+    if (action === 'reorder_cards') {
+      if (hasOwn(tool, 'categories')) {
+        return toolError('multiple_categories_not_supported', { hint: '一次只重排一个分类，请分别调用' });
+      }
+      if (tool.mode && tool.mode !== 'full') {
+        return toolError('unsupported_mode', { mode: tool.mode, hint: '当前只支持完整列表重排' });
+      }
+      const catRes = resolveExistingCategory(tool.category || tool.targetCategory);
+      if (catRes.error) return toolError(catRes.error, { categories: catRes.categories });
+      const category = catRes.category;
+      const live = allCards().filter((c) => c.category === category);
+      if (!live.length) return toolError('category_empty', { category: category });
+      const terms = splitList(tool.terms);
+      if (!terms.length) return toolError('empty_terms', { hint: '请提供该分类完整、有序的术语列表' });
+      if (terms.length > MAX_REORDER_TERMS) {
+        return toolError('too_many_terms', { count: terms.length, max: MAX_REORDER_TERMS, hint: '分类过大，请缩小范围' });
+      }
+
+      const normLive = new Map();
+      live.forEach((c) => {
+        const n = normalizeTerm(c.term);
+        if (!normLive.has(n)) normLive.set(n, []);
+        normLive.get(n).push(c);
+      });
+      const provided = [];
+      const unknown = [];
+      const duplicates = [];
+      const seen = new Set();
+      terms.forEach((t, i) => {
+        const raw = String(t == null ? '' : t).trim();
+        if (!raw) { unknown.push({ term: raw, index: i }); return; }
+        let matches = live.filter((c) => c.term === raw);
+        if (!matches.length) matches = normLive.get(normalizeTerm(raw)) || [];
+        if (matches.length === 1) {
+          const card = matches[0];
+          if (seen.has(card.id)) {
+            duplicates.push({ term: raw, index: i, resolved: card.term });
+            return;
+          }
+          seen.add(card.id);
+          provided.push(card);
+        } else if (matches.length > 1) {
+          duplicates.push({ term: raw, index: i, reason: 'term_ambiguous', candidates: matches.map((c) => c.term) });
+        } else {
+          unknown.push({ term: raw, index: i });
+        }
+      });
+      const missing = live.filter((c) => !seen.has(c.id));
+      if (unknown.length || duplicates.length || missing.length) {
+        return toolResult({
+          ok: false,
+          action: 'reorder_cards',
+          category: category,
+          changed: false,
+          providedCount: provided.length,
+          liveCount: live.length,
+          unknown: unknown,
+          duplicates: duplicates,
+          missing: missing.map((c) => c.term),
+          error: missing.length ? 'missing_terms' : (unknown.length ? 'unknown_terms' : 'duplicate_terms'),
+          hint: '必须提供该分类完整、无重复、无未知的术语列表；先调用 list_terms(category)',
+          retryable: true
+        });
+      }
+
+      const oldIds = live.map((c) => c.id);
+      const newIds = provided.map((c) => c.id);
+      if (oldIds.length === newIds.length && oldIds.every((id, i) => id === newIds[i])) {
+        return toolResult({ ok: true, action: 'reorder_cards', category: category, changed: false, noop: true, count: newIds.length });
+      }
+      if (!confirm('将重排「' + category + '」的 ' + newIds.length + ' 张卡片：\n' +
+        provided.slice(0, 20).map((c, i) => '· ' + (i + 1) + '. ' + c.term).join('\n') +
+        (provided.length > 20 ? '\n…' : ''))) {
+        return toolError('cancelled', { hint: '用户取消了重排，不要重试' });
+      }
+      snapshotData();
+      const map = loadOrder();
+      map[category] = newIds;
+      try { await saveOrder(map); }
+      catch (e) { return toolError('storage_error', { message: e.message }); }
+      refreshAfterDataChange();
+      return toolResult({
+        ok: true,
+        action: 'reorder_cards',
+        category: category,
+        changed: true,
+        count: newIds.length,
+        orderPreview: orderPreviewFor(category),
+        undo: true
+      });
     }
 
     if (action === 'update_cards') {
@@ -1347,13 +2245,26 @@
       snapshotData();
       const updated = [];
       const failed = [];
-      sel.cards.forEach((c) => {
-        const r = applyPatch(c, clean);
+      for (const c of sel.cards) {
+        const r = await applyPatch(c, clean);
         if (r.ok) updated.push(r.renamed || c.term);
         else failed.push({ term: c.term, reason: r.reason });
-      });
+      }
+      await flushUserData();
       refreshAfterDataChange();
-      return toolResult({ ok: true, action: 'update_cards', updated: updated.length, terms: updated, failed: failed, missing: sel.missing });
+      const allOk = failed.length === 0 && sel.missing.length === 0;
+      return toolResult({
+        ok: allOk,
+        action: 'update_cards',
+        changed: updated.length > 0,
+        updated: updated.length,
+        terms: updated,
+        failed: failed,
+        missing: sel.missing,
+        partial: !allOk && updated.length > 0,
+        error: allOk ? undefined : 'partial_update',
+        retrySafe: allOk || updated.length === 0
+      });
     }
 
     if (action === 'move_cards') {
@@ -1364,15 +2275,131 @@
           hint: sel.error === 'not_found' ? '先 search_cards 确认术语' : '请提供 terms/category/categories'
         });
       }
-      const to = String(tool.to || tool.targetCategory || '').trim();
-      if (!to) return toolError('missing_target_category', { hint: '请提供 "to":"新分类名"' });
-      if (!confirm('将 ' + sel.cards.length + ' 张卡片移动到「' + to + '」：\n' + previewList(sel.cards))) {
+      const anchor = parseAnchorSpec(tool);
+      if (anchor.error) return toolError(anchor.error, anchor);
+      const explicitAnchor = hasOwn(tool, 'after') || hasOwn(tool, 'before') || hasOwn(tool, 'position');
+      const targetRaw = String(tool.to || tool.targetCategory || '').trim();
+      const selectedIds = new Set(sel.cards.map((c) => c.id));
+      const fromCats = Array.from(new Set(sel.cards.map((c) => c.category)));
+      let targetCat;
+      if (targetRaw) {
+        const catRes = resolveExistingCategory(targetRaw);
+        if (catRes.error) {
+          if (catRes.error === 'category_not_found' && (anchor.type === 'start' || anchor.type === 'end')) {
+            targetCat = targetRaw;
+          } else {
+            return toolError(catRes.error, { categories: catRes.categories });
+          }
+        } else {
+          targetCat = catRes.category;
+        }
+      } else {
+        if (!explicitAnchor) {
+          return toolError('missing_target_category', { hint: '请提供 "to":"目标分类"，或提供 after/before/position 做分类内移动' });
+        }
+        if (fromCats.length !== 1) {
+          return toolError('category_required', { hint: '跨分类移动请提供 to' });
+        }
+        targetCat = fromCats[0];
+      }
+      if (!explicitAnchor && fromCats.length === 1 && fromCats[0] === targetCat) {
+        return toolResult({
+          ok: true,
+          action: 'move_cards',
+          changed: false,
+          noop: true,
+          moved: 0,
+          category: targetCat,
+          hint: '卡片已在目标分类末尾；分类内排序请提供 after/before/position'
+        });
+      }
+      if (anchor.term && sel.cards.some((c) => normalizeTerm(c.term) === normalizeTerm(anchor.term))) {
+        return toolError('anchor_in_selection', { term: anchor.term, hint: '锚点不能是正在移动的卡片' });
+      }
+
+      const targetLive = allCards().filter((c) => c.category === targetCat && !selectedIds.has(c.id));
+      let insertAt;
+      if (anchor.type === 'start') {
+        insertAt = 0;
+      } else if (anchor.type === 'end') {
+        insertAt = targetLive.length;
+      } else {
+        const raw = anchor.term;
+        let matches = targetLive.filter((c) => c.term === raw);
+        if (!matches.length) matches = targetLive.filter((c) => normalizeTerm(c.term) === normalizeTerm(raw));
+        if (matches.length > 1) {
+          return toolError('term_ambiguous', { term: raw, candidates: matches.map((c) => c.term) });
+        }
+        if (!matches.length) {
+          const other = allCards().find((c) => !selectedIds.has(c.id) && normalizeTerm(c.term) === normalizeTerm(raw));
+          if (other && other.category !== targetCat) {
+            return toolError('anchor_wrong_category', { term: raw, category: other.category });
+          }
+          if (getDeleted().some((t) => normalizeTerm(t) === normalizeTerm(raw))) {
+            return toolError('anchor_deleted', { term: raw });
+          }
+          return toolError('anchor_not_found', {
+            term: raw,
+            candidates: targetLive.slice(0, 10).map((c) => c.term)
+          });
+        }
+        const idx = targetLive.indexOf(matches[0]);
+        insertAt = anchor.type === 'after' ? idx + 1 : idx;
+      }
+
+      const blockIds = sel.cards.map((c) => c.id);
+      const targetIds = targetLive.map((c) => c.id);
+      targetIds.splice(insertAt, 0, ...blockIds);
+      const oldTargetIds = allCards().filter((c) => c.category === targetCat).map((c) => c.id);
+      const sameCategory = fromCats.length === 1 && fromCats[0] === targetCat;
+      const sameOrder = sameCategory && oldTargetIds.length === targetIds.length &&
+        oldTargetIds.every((id, i) => id === targetIds[i]);
+      if (sameOrder) {
+        return toolResult({
+          ok: true,
+          action: 'move_cards',
+          changed: false,
+          noop: true,
+          moved: 0,
+          category: targetCat,
+          orderPreview: orderPreviewFor(targetCat)
+        });
+      }
+
+      const msg = sameCategory
+        ? '将在「' + targetCat + '」内移动 ' + sel.cards.length + ' 张卡片：\n' + previewList(sel.cards)
+        : '将 ' + sel.cards.length + ' 张卡片移动到「' + targetCat + '」：\n' + previewList(sel.cards);
+      if (!confirm(msg)) {
         return toolError('cancelled', { hint: '用户取消了移动，不要重试' });
       }
       snapshotData();
-      sel.cards.forEach((c) => updateCard(c, { category: to }));
+      try {
+        sel.cards.forEach((c) => {
+          if (c.category !== targetCat) updateCardData(c, { category: targetCat });
+        });
+        const map = loadOrder();
+        Object.keys(map).forEach((cat) => {
+          const arr = map[cat].filter((id) => !selectedIds.has(id));
+          if (arr.length) map[cat] = arr;
+          else delete map[cat];
+        });
+        map[targetCat] = targetIds;
+        await saveOrder(map);
+      } catch (e) {
+        await restoreSnapshot();
+        return toolError('storage_error', { message: e.message, hint: '保存失败，已尝试回滚' });
+      }
       refreshAfterDataChange();
-      return toolResult({ ok: true, action: 'move_cards', moved: sel.cards.length, category: to, terms: sel.cards.map((c) => c.term) });
+      return toolResult({
+        ok: true,
+        action: 'move_cards',
+        changed: true,
+        moved: sel.cards.length,
+        category: targetCat,
+        terms: sel.cards.map((c) => c.term),
+        orderPreview: orderPreviewFor(targetCat),
+        undo: true
+      });
     }
 
     if (action === 'rebuild_cards') {
@@ -1396,15 +2423,27 @@
       const failed = [];
       for (const c of sel.cards) {
         try {
-          const patch = await generateRebuild(c, inst, fields);
+          const fullCard = c.detail ? c : Object.assign({}, c, { detail: await loadCardDetail(c) });
+          const patch = await generateRebuild(fullCard, inst, fields);
           if (patch && Object.keys(patch).length) { updateCard(c, patch); ok++; }
           else failed.push({ term: c.term, reason: 'ai_empty' });
         } catch (e) {
           failed.push({ term: c.term, reason: e.message });
         }
       }
+      await flushUserData();
       refreshAfterDataChange();
-      return toolResult({ ok: true, action: 'rebuild_cards', updated: ok, failed: failed });
+      const allOk = failed.length === 0;
+      return toolResult({
+        ok: allOk,
+        action: 'rebuild_cards',
+        changed: ok > 0,
+        updated: ok,
+        failed: failed,
+        partial: !allOk && ok > 0,
+        error: allOk ? undefined : 'partial_update',
+        retrySafe: allOk || ok === 0
+      });
     }
 
     if (action === 'set_detail') {
@@ -1419,6 +2458,7 @@
       }
       snapshotData();
       sel.cards.forEach((c) => updateCard(c, { detail: detail }));
+      await flushUserData();
       refreshAfterDataChange();
       return toolResult({ ok: true, action: 'set_detail', updated: sel.cards.length, terms: sel.cards.map((c) => c.term) });
     }
@@ -1433,6 +2473,7 @@
       }
       snapshotData();
       sel.cards.forEach((c) => updateCard(c, { detail: '' }));
+      await flushUserData();
       refreshAfterDataChange();
       return toolResult({ ok: true, action: 'clear_detail', cleared: sel.cards.length, terms: sel.cards.map((c) => c.term) });
     }
@@ -1450,12 +2491,13 @@
       }
       snapshotData();
       sel.cards.forEach((c) => deleteCard(c));
+      await flushUserData();
       refreshAfterDataChange();
       return toolResult({ ok: true, action: 'delete_cards', deleted: sel.cards.length, terms: sel.cards.map((c) => c.term) });
     }
 
     if (action === 'undo') {
-      if (!restoreSnapshot()) return toolError('nothing_to_undo', { hint: '没有可撤销的写操作' });
+      if (!(await restoreSnapshot())) return toolError('nothing_to_undo', { hint: '没有可撤销的写操作' });
       return toolResult({ ok: true, action: 'undo', message: '已撤销上一次写操作' });
     }
 
@@ -1550,7 +2592,7 @@
     box.scrollTop = box.scrollHeight;
 
     try {
-      const callWithHistory = () => callAi([{ role: 'system', content: buildAiSystemPrompt() }, ...aiHistory]);
+      const callWithHistory = async () => callAi([{ role: 'system', content: await buildAiSystemPrompt() }, ...aiHistory]);
       let content = await callWithHistory();
       let rounds = 0;
 
@@ -1558,12 +2600,35 @@
         const calls = parseToolCalls(content);
         if (calls.length === 0) break;
         aiHistory.push({ role: 'assistant', content: content, hidden: true });
+        const tasks = calls.map((tool) => {
+          const raw = String((tool && tool.action) || '').trim();
+          return { tool: tool, action: LEGACY_ACTIONS[raw] || raw };
+        });
+        const hasRead = tasks.some((t) => READ_ACTIONS.has(t.action));
+        const hasWrite = tasks.some((t) => WRITE_ACTIONS.has(t.action));
+        const deferWrites = hasRead && hasWrite;
+        let stopWrites = false;
         const results = [];
-        for (const tool of calls) {
+        for (const task of tasks) {
+          const isWrite = WRITE_ACTIONS.has(task.action);
+          if (isWrite && (deferWrites || stopWrites)) {
+            results.push(toolError(deferWrites ? 'wait_for_tool_results' : 'skipped_due_to_previous_failure', {
+              action: task.action,
+              hint: deferWrites
+                ? '同一轮包含读取工具；请先查看工具结果，下一轮再执行写操作'
+                : '前面的写操作失败或取消，后续写操作已跳过，不要盲目重试'
+            }));
+            continue;
+          }
           try {
-            results.push(await executeTool(tool));
+            const res = await executeTool(task.tool);
+            results.push(res);
+            if (isWrite) {
+              try { if (!JSON.parse(res).ok) stopWrites = true; } catch (e) {}
+            }
           } catch (e) {
-            results.push(toolError('tool_crashed', { action: tool && tool.action, message: e.message }));
+            results.push(toolError('tool_crashed', { action: task.tool && task.tool.action, message: e.message }));
+            if (isWrite) stopWrites = true;
           }
         }
         aiHistory.push({ role: 'user', content: '【工具结果】\n' + results.join('\n'), hidden: true });
@@ -1574,7 +2639,7 @@
       if (parseToolCalls(content).length) {
         aiHistory.push({ role: 'assistant', content: content, hidden: true });
         content = await callAi([
-          { role: 'system', content: buildAiSystemPrompt() },
+          { role: 'system', content: await buildAiSystemPrompt() },
           ...aiHistory,
           { role: 'user', content: '请用中文简要总结上面的工具执行结果，不要再输出 JSON 或调用工具。' }
         ]);
@@ -1634,11 +2699,52 @@
     if (listVal && cats.includes(listVal)) $('#listCategory').value = listVal;
   }
 
-  function addCardsToStore(cards, clearAfter) {
-    if (cards.length === 0) return;
-    saveCustom(loadCustom().concat(cards));
+  async function addCardsToStore(cards, clearAfter) {
+    if (!cards.length) return;
+    const existing = new Set(allCards().map((c) => normalizeTerm(c.term)));
+    const seen = new Set();
+    const kept = [];
+    let skipped = 0;
+    cards.forEach((c) => {
+      const term = String(c.term || '').trim();
+      const n = normalizeTerm(term);
+      if (!n || existing.has(n) || seen.has(n)) { skipped++; return; }
+      seen.add(n);
+      kept.push({
+        id: genId(),
+        term: term,
+        category: String(c.category || '自定义').trim(),
+        def: String(c.def || '').trim(),
+        code: c.code ? String(c.code).trim() : '',
+        literal: c.literal ? String(c.literal).trim() : '',
+        phonetic: c.phonetic ? String(c.phonetic).trim() : '',
+        detail: c.detail ? String(c.detail).trim() : ''
+      });
+    });
+    if (!kept.length) { alert('这些卡片都已存在'); return; }
+    snapshotData();
+    const oldCustom = loadCustom();
+    const oldOrder = loadOrder();
+    const map = loadOrder();
+    const byCat = new Map();
+    kept.forEach((c) => {
+      if (!byCat.has(c.category)) byCat.set(c.category, []);
+      byCat.get(c.category).push(c.id);
+    });
+    byCat.forEach((ids, cat) => {
+      const target = Array.isArray(map[cat]) ? map[cat] : [];
+      ids.forEach((id) => { if (!target.includes(id)) target.push(id); });
+      map[cat] = target;
+    });
+    try {
+      await Promise.all([saveCustom(oldCustom.concat(kept)), saveOrder(map)]);
+    } catch (e) {
+      try { await Promise.all([saveCustom(oldCustom), saveOrder(oldOrder)]); } catch (err) {}
+      alert('保存失败：' + e.message);
+      return;
+    }
     refreshAfterDataChange();
-    alert('已添加 ' + cards.length + ' 张卡片');
+    alert('已添加 ' + kept.length + ' 张卡片' + (skipped ? '，跳过 ' + skipped + ' 张重复' : ''));
     if (clearAfter) $('#aiAddResult').innerHTML = '';
   }
 
@@ -1703,8 +2809,10 @@
     btn.textContent = '生成中…';
     box.innerHTML = '<div class="empty">AI 生成中，请稍候…</div>';
 
-    const existingTerms = allCards().map((c) => c.term).join('、');
-    const systemMsg = AI_ADD_SYSTEM + ' 以下是已有术语，请勿生成与它们重复或语义相同的卡片：' + existingTerms;
+    const existing = allCards();
+    const cats = categories();
+    const systemMsg = AI_ADD_SYSTEM + ' 当前库已有 ' + existing.length + ' 张卡片，分类：' +
+      (cats.length ? cats.join('、') : '无') + '。请尽量复用已有分类；系统会在添加时自动跳过重复术语。';
 
     try {
       const content = await callAi([
@@ -1914,7 +3022,6 @@
       e.stopPropagation();
       if (studyCards[studyIndex]) speakTerm(studyCards[studyIndex].term);
     });
-
     // 设置
     $('#settingsBtn').addEventListener('click', openSettings);
     $('#settingsClose').addEventListener('click', closeSettings);
@@ -2098,8 +3205,19 @@
   }
 
   // ---------- 初始化 ----------
-  function init() {
+  async function init() {
     window.__handleAndroidBack = handleAndroidBack;
+    try {
+      const progress = $('#progressText');
+      if (progress) progress.textContent = '正在加载数据…';
+      await Promise.all([loadBuiltinData(), loadUserData()]);
+    } catch (e) {
+      const progress = $('#progressText');
+      if (progress) progress.textContent = '数据加载失败：' + e.message;
+      console.error(e);
+      alert('内置数据加载失败：' + e.message + '\n请确认 www/data 已生成并同步。');
+      return;
+    }
     fillCategorySelect($('#studyCategory'), true);
     fillCategorySelect($('#listCategory'), true);
     initPeekCard();
@@ -2119,6 +3237,10 @@
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
+
+    if (navigator.storage && typeof navigator.storage.persist === 'function') {
+      navigator.storage.persist().catch(() => {});
     }
 
     if ('speechSynthesis' in window) {

@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Java 术语速记 - 针对 Java 驼峰命名、缩写与概念的背诵卡片应用",
   "scripts": {
-    "sync": "npx cap sync android"
+    "build:data": "node scripts/build-data.js",
+    "merge:details": "node scripts/merge-details.js",
+    "sync": "npm run build:data && npx cap sync android"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.2",

@@ -1,0 +1,103 @@
+{
+  "app": "java-suji-data",
+  "version": "79bbacad6173",
+  "total": 1677,
+  "cardsFile": "cards.json",
+  "categories": [
+    {
+      "name": "命名与缩写",
+      "count": 113,
+      "detailFile": "details/01.json"
+    },
+    {
+      "name": "集合框架",
+      "count": 61,
+      "detailFile": "details/02.json"
+    },
+    {
+      "name": "并发与多线程",
+      "count": 89,
+      "detailFile": "details/03.json"
+    },
+    {
+      "name": "JVM 与内存",
+      "count": 99,
+      "detailFile": "details/04.json"
+    },
+    {
+      "name": "面向对象",
+      "count": 86,
+      "detailFile": "details/05.json"
+    },
+    {
+      "name": "函数式编程",
+      "count": 104,
+      "detailFile": "details/06.json"
+    },
+    {
+      "name": "注解与反射",
+      "count": 65,
+      "detailFile": "details/07.json"
+    },
+    {
+      "name": "Spring 核心",
+      "count": 81,
+      "detailFile": "details/08.json"
+    },
+    {
+      "name": "Spring 注解",
+      "count": 90,
+      "detailFile": "details/09.json"
+    },
+    {
+      "name": "Spring Boot",
+      "count": 87,
+      "detailFile": "details/10.json"
+    },
+    {
+      "name": "Spring MVC",
+      "count": 41,
+      "detailFile": "details/11.json"
+    },
+    {
+      "name": "数据库与 SQL",
+      "count": 133,
+      "detailFile": "details/12.json"
+    },
+    {
+      "name": "持久层框架",
+      "count": 97,
+      "detailFile": "details/13.json"
+    },
+    {
+      "name": "缓存与 Redis",
+      "count": 71,
+      "detailFile": "details/14.json"
+    },
+    {
+      "name": "消息队列",
+      "count": 113,
+      "detailFile": "details/15.json"
+    },
+    {
+      "name": "分布式",
+      "count": 96,
+      "detailFile": "details/16.json"
+    },
+    {
+      "name": "网络与 IO",
+      "count": 117,
+      "detailFile": "details/17.json"
+    },
+    {
+      "name": "设计模式",
+      "count": 56,
+      "detailFile": "details/18.json"
+    },
+    {
+      "name": "工程与工具",
+      "count": 78,
+      "detailFile": "details/19.json"
+    }
+  ]
+}

@@ -1,11 +1,12 @@
-const CACHE_NAME = 'java-suji-v4';
+const CACHE_NAME = 'java-suji-v7';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
   './css/style.css',
-  './js/data.js',
   './js/app.js',
+  './data/index.json',
+  './data/cards.json',
   './icons/icon.svg',
   './icons/icon-192.png',
   './icons/icon-512.png'
