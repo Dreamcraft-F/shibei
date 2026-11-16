@@ -1036,7 +1036,7 @@
     });
     html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/(?:^\|.+\|\s*$\n?)+/gm, (match) => {
+    html = html.replace(/(?:^\|.+\|[ \t]*$\n?)+/gm, (match) => {
       const lines = match.trim().split('\n');
       if (lines.length < 2) return match;
       const parseRow = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
